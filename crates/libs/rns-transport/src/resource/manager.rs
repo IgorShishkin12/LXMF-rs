@@ -241,7 +241,7 @@ impl ResourceManager {
             resource_diag(&format!("advertisement_duplicate hash={resource_hash}"));
             return;
         }
-        let Ok(mut receiver) = ResourceReceiver::new(&advertisement, *link.id()) else {
+        let Ok(mut receiver) = ResourceReceiver::new(&advertisement, *link.id(), link.packet_mdu()) else {
             log::warn!("rejecting unreasonable advertisement");
             resource_diag("reject_advertisement unreasonable");
             return;

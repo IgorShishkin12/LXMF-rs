@@ -13,18 +13,16 @@ use crate::destination::link::Link;
 use crate::error::RnsError;
 use crate::hash::{AddressHash, Hash, ADDRESS_HASH_SIZE, HASH_SIZE};
 use crate::packet::DestinationType;
-use crate::packet::{Header, Packet, PacketContext, PacketDataBuffer, PacketType, PACKET_MDU};
+use crate::packet::{Header, Packet, PacketContext, PacketDataBuffer, PacketType};
 
 pub const WINDOW: usize = 4;
 pub const MAPHASH_LEN: usize = 4;
 pub const RANDOM_HASH_SIZE: usize = 4;
 pub const ADVERTISEMENT_OVERHEAD: usize = 134;
 const HEADER_MINSIZE: usize = 2 + 1 + ADDRESS_HASH_SIZE;
-const HEADER_MAXSIZE: usize = 2 + 1 + (ADDRESS_HASH_SIZE * 2);
 const IFAC_MIN_SIZE: usize = 1;
-const RETICULUM_MTU: usize = PACKET_MDU + HEADER_MAXSIZE + IFAC_MIN_SIZE;
 pub const LINK_PACKET_MDU: usize =
-    ((RETICULUM_MTU - IFAC_MIN_SIZE - HEADER_MINSIZE - FERNET_OVERHEAD_SIZE)
+    ((220usize - IFAC_MIN_SIZE - HEADER_MINSIZE - FERNET_OVERHEAD_SIZE)
         / FERNET_MAX_PADDING_SIZE)
         * FERNET_MAX_PADDING_SIZE
         - 1;

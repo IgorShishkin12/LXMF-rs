@@ -48,9 +48,9 @@ enum PartOutcome {
 }
 
 impl ResourceReceiver {
-    fn new(adv: &ResourceAdvertisement, link_id: AddressHash) -> Result<Self, RnsError> {
+    fn new(adv: &ResourceAdvertisement, link_id: AddressHash, packet_mdu: usize) -> Result<Self, RnsError> {
         let now = Instant::now();
-        let max_parts = max_advertised_parts(adv.transfer_size)?;
+        let max_parts = max_advertised_parts(adv.transfer_size, packet_mdu)?;
         if adv.parts == 0 || u64::from(adv.parts) > max_parts {
             return Err(RnsError::InvalidArgument);
         }
@@ -370,12 +370,11 @@ fn max_decompressed_resource_size(advertised_data_size: u64) -> usize {
         .min(AUTO_COMPRESS_MAX_SIZE)
 }
 
-fn max_advertised_parts(transfer_size: u64) -> Result<u64, RnsError> {
+fn max_advertised_parts(transfer_size: u64, packet_mdu: usize) -> Result<u64, RnsError> {
     if transfer_size == 0 || transfer_size > MAX_INBOUND_RESOURCE_TRANSFER_SIZE {
         return Err(RnsError::InvalidArgument);
     }
-    let packet_mdu = PACKET_MDU as u64;
-    Ok(transfer_size.div_ceil(packet_mdu).max(1))
+    Ok(transfer_size.div_ceil(packet_mdu as u64).max(1))
 }
 
 fn decompress_resource_payload(payload: &[u8], max_size: usize) -> Result<Vec<u8>, ()> {

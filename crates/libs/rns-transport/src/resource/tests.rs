@@ -4,6 +4,7 @@ mod tests {
     use crate::destination::link::LinkHandleResult;
     use crate::destination::{DestinationDesc, DestinationName};
     use crate::identity::PrivateIdentity;
+    use crate::packet::PACKET_MDU;
     use rand_core::OsRng;
 
     #[test]
@@ -356,14 +357,15 @@ mod tests {
 
     #[test]
     fn resource_receiver_bounds_part_count_by_transfer_size_and_mdu() {
-        assert_eq!(max_advertised_parts(1).expect("one byte transfer"), 1);
-        assert_eq!(max_advertised_parts(PACKET_MDU as u64).expect("one packet transfer"), 1);
+        const MDU: usize = 184; // LoRa packet_mdu default
+        assert_eq!(max_advertised_parts(1, MDU).expect("one byte transfer"), 1);
+        assert_eq!(max_advertised_parts(MDU as u64, MDU).expect("one packet transfer"), 1);
         assert_eq!(
-            max_advertised_parts(PACKET_MDU as u64 + 1).expect("two packet transfer"),
+            max_advertised_parts(MDU as u64 + 1, MDU).expect("two packet transfer"),
             2
         );
-        assert!(max_advertised_parts(0).is_err());
-        assert!(max_advertised_parts(MAX_INBOUND_RESOURCE_TRANSFER_SIZE + 1).is_err());
+        assert!(max_advertised_parts(0, MDU).is_err());
+        assert!(max_advertised_parts(MAX_INBOUND_RESOURCE_TRANSFER_SIZE + 1, MDU).is_err());
     }
 
     include!("tests_timeouts.rs");

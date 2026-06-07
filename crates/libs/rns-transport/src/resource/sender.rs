@@ -72,7 +72,7 @@ impl ResourceSender {
         let cipher_text = cipher.to_vec();
 
         let mut parts = Vec::new();
-        for chunk in cipher_text.chunks(PACKET_MDU) {
+        for chunk in cipher_text.chunks(link.packet_mdu()) {
             parts.push(chunk.to_vec());
         }
 

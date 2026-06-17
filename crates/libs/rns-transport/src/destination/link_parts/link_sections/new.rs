@@ -365,6 +365,7 @@ impl Link {
                                 .insert(pending.sequence, ChannelMessageState::Delivered);
                             self.note_channel_delivery();
                         }
+                        self.post_event(LinkEvent::DataDelivered(hash));
                         return LinkHandleResult::None;
                     }
                 }

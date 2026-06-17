@@ -183,6 +183,12 @@ pub(super) async fn handle_proof(
             });
         }
     }
+    // Also dispatch to the matching inbound link so DataDelivered fires for
+    // data_packets sent over accepted (inbound) connections.  in_links is keyed
+    // by link hash which is also packet.destination for link proofs.
+    if let Some(link) = handler.in_links.get(&packet.destination).cloned() {
+        link.lock().await.handle_packet(&packet, iface);
+    }
     for message in rtt_messages {
         let dispatch = handler.send(message).await;
         if dispatch.sent_ifaces == 0 {

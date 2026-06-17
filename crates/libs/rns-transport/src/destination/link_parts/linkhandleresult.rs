@@ -19,6 +19,9 @@ pub enum LinkEvent {
     Activated,
     Data(Box<LinkPayload>),
     PeerIdentified(Box<Identity>),
+        /// Fired on the sender side when the peer's LinkProof for a data_packet arrives.
+    /// The inner value is the hash of the original packet (matches `packet.hash()`).
+    DataDelivered(Hash),
     Closed,
 }
 

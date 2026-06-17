@@ -166,6 +166,21 @@ impl Link {
         &self.id
     }
 
+    pub fn mtu(&self) -> Option<usize> {
+        self.signalling.map(|bytes| {
+            let value = ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32;
+            (value & LINK_MTU_MASK) as usize
+        })
+    }
+
+    pub fn packet_mdu(&self) -> usize {
+        const OVERHEAD: usize = 36; // max header (35) + IFAC min (1)
+        self.mtu()
+            .filter(|&m| m > OVERHEAD)
+            .map(|m| m - OVERHEAD)
+            .unwrap_or(PACKET_MDU) // default link MDU when no MTU was negotiated
+    }
+
     pub(crate) fn validate_packet_proof(&self, packet: &Packet) -> Result<Hash, RnsError> {
         validate_link_packet_proof(&self.peer_identity, &self.id, packet)
     }

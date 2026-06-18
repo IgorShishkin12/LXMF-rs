@@ -13,6 +13,7 @@ impl Link {
             derived_key: DerivedKey::new_empty(),
             session_cipher: None,
             signalling: None,
+            iface_mtu: None,
             status: LinkStatus::Pending,
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
@@ -80,6 +81,7 @@ impl Link {
             derived_key: DerivedKey::new_empty(),
             session_cipher: None,
             signalling,
+            iface_mtu: None,
             status: LinkStatus::Pending,
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
@@ -140,6 +142,7 @@ impl Link {
         self.request_time = Instant::now();
         self.activated_at = None;
         self.ingress_iface = None;
+        self.iface_mtu = None;
         self.last_inbound = None;
         self.last_outbound = Some(self.request_time);
         self.last_data = Some(self.request_time);

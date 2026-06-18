@@ -263,6 +263,9 @@ pub(super) async fn handle_link_request_as_destination<'a>(
 
                 if let Ok(mut link) = link {
                     link.set_ingress_iface(iface);
+                    if let Some(mtu) = handler.iface_manager.lock().await.mtu(&iface) {
+                        link.set_iface_mtu(mtu);
+                    }
                     log::trace!(
                         "[tp] link_proof_tx dst={} link_id={}",
                         packet.destination,

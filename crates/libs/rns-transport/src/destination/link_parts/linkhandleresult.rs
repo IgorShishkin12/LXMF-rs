@@ -41,6 +41,7 @@ pub struct Link {
     derived_key: DerivedKey,
     session_cipher: Option<CachedFernet>,
     signalling: Option<[u8; LINK_MTU_SIZE]>,
+    iface_mtu: Option<usize>,
     status: LinkStatus,
     request_time: Instant,
     rtt: Duration,

@@ -166,20 +166,26 @@ impl Link {
         &self.id
     }
 
-    /// MTU of the local interface this link uses, read live from the interface
-    /// manager. Returns `None` if the link has no ingress interface yet (not yet
-    /// activated) or the interface is not registered.
-    pub fn mtu(&self, iface_manager: &InterfaceManager) -> Option<usize> {
-        iface_manager.mtu(&self.ingress_iface?)
+    /// MTU of the local interface this link uses. Set by the transport when the
+    /// link activates, and updated dynamically (e.g. after BLE ATT negotiation).
+    /// `None` only while the link is still pending (no interface known yet).
+    pub fn mtu(&self) -> Option<usize> {
+        self.iface_mtu
     }
 
     /// Usable payload bytes per resource chunk on this link's local interface.
-    /// Subtracts the maximum packet header and IFAC overhead from the live MTU.
-    /// Returns `None` for the same reasons as `mtu()`.
-    pub fn packet_mdu(&self, iface_manager: &InterfaceManager) -> Option<usize> {
+    /// Falls back to `PACKET_MDU` while the link is pending.
+    pub fn packet_mdu(&self) -> usize {
         const OVERHEAD: usize = 2 + 1 + ADDRESS_HASH_SIZE * 2 + 1; // HEADER_MAXSIZE + IFAC_MIN
-        let mtu = self.mtu(iface_manager)?;
-        mtu.checked_sub(OVERHEAD).filter(|&v| v > 0).map(|v| v.min(PACKET_MDU))
+        self.iface_mtu
+            .and_then(|m| m.checked_sub(OVERHEAD))
+            .filter(|&v| v > 0)
+            .map(|v| v.min(PACKET_MDU))
+            .unwrap_or(PACKET_MDU)
+    }
+
+    pub fn set_iface_mtu(&mut self, mtu: usize) {
+        self.iface_mtu = Some(mtu);
     }
 
     pub(crate) fn validate_packet_proof(&self, packet: &Packet) -> Result<Hash, RnsError> {

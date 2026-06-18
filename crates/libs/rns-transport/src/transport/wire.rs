@@ -177,6 +177,9 @@ pub(super) async fn handle_proof(
     for link in handler.out_links.values() {
         let mut link = link.lock().await;
         if let LinkHandleResult::Activated = link.handle_packet(&packet, iface) {
+            if let Some(mtu) = handler.iface_manager.lock().await.mtu(&iface) {
+                link.set_iface_mtu(mtu);
+            }
             rtt_messages.push(TxMessage {
                 tx_type: TxMessageType::Direct(iface),
                 packet: link.create_rtt(),

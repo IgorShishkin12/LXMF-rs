@@ -23,11 +23,15 @@ async fn startup_vrn76_kiss_ble(
     {
         let adapter = vrn76_kiss_ble::build_native_interface(iface, config);
         let mode = iface.interface_mode().unwrap_or(InterfaceMode::Full);
+        let iface_manager_clone = iface_manager.clone();
         let vrn76_iface = iface_manager.lock().await.spawn_as_with_mode(
             adapter,
             |context| async move {
-                rns_transport::iface::vrn76_kiss_ble::NativeVrn76KissBleInterface::spawn(context)
-                    .await;
+                rns_transport::iface::vrn76_kiss_ble::NativeVrn76KissBleInterface::spawn(
+                    context,
+                    iface_manager_clone,
+                )
+                .await;
             },
             IfaceRole::Unicast,
             mode,
@@ -148,11 +152,15 @@ async fn startup_lora(
         {
             let adapter = lora::build_native_rnode_ble_interface(iface, config);
             let mode = iface.interface_mode().unwrap_or(InterfaceMode::Full);
+            let iface_manager_clone = iface_manager.clone();
             let rnode_iface = iface_manager.lock().await.spawn_as_with_mode(
                 adapter,
                 |context| async move {
-                    rns_transport::iface::rnode_ble::NativeRnodeBleKissInterface::spawn(context)
-                        .await;
+                    rns_transport::iface::rnode_ble::NativeRnodeBleKissInterface::spawn(
+                        context,
+                        iface_manager_clone,
+                    )
+                    .await;
                 },
                 IfaceRole::Unicast,
                 mode,

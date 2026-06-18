@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::buffer::{InputBuffer, OutputBuffer};
 
 #[cfg(feature = "rnode-ble")]
-use crate::iface::{IfaceSource, Interface, InterfaceContext, RxMessage};
+use crate::iface::{IfaceSource, Interface, InterfaceContext, InterfaceManager, RxMessage};
 
 #[cfg(feature = "rnode-ble")]
 use crate::packet::Packet;

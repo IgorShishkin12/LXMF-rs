@@ -6,7 +6,7 @@ use std::time::{Duration, Instant as StdInstant};
 use crate::buffer::{InputBuffer, OutputBuffer};
 
 #[cfg(feature = "vrn76-kiss-ble")]
-use crate::iface::{IfaceSource, Interface, InterfaceContext, RxMessage};
+use crate::iface::{IfaceSource, Interface, InterfaceContext, InterfaceManager, RxMessage};
 
 #[cfg(feature = "vrn76-kiss-ble")]
 use crate::packet::Packet;

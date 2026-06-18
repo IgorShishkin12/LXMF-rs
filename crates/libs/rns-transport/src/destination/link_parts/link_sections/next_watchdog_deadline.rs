@@ -168,20 +168,15 @@ impl Link {
 
     /// MTU of the local interface this link uses. Set by the transport when the
     /// link activates, and updated dynamically (e.g. after BLE ATT negotiation).
-    /// `None` only while the link is still pending (no interface known yet).
-    pub fn mtu(&self) -> Option<usize> {
-        self.iface_mtu
+    /// Panics if called before the link is active (iface_mtu not yet set).
+    pub fn mtu(&self) -> usize {
+        self.iface_mtu.expect("link mtu() called before interface MTU was set — link not yet active")
     }
 
     /// Usable payload bytes per resource chunk on this link's local interface.
-    /// Falls back to `PACKET_MDU` while the link is pending.
     pub fn packet_mdu(&self) -> usize {
         const OVERHEAD: usize = 2 + 1 + ADDRESS_HASH_SIZE * 2 + 1; // HEADER_MAXSIZE + IFAC_MIN
-        self.iface_mtu
-            .and_then(|m| m.checked_sub(OVERHEAD))
-            .filter(|&v| v > 0)
-            .map(|v| v.min(PACKET_MDU))
-            .unwrap_or(PACKET_MDU)
+        self.mtu().saturating_sub(OVERHEAD).min(PACKET_MDU).max(1)
     }
 
     pub fn set_iface_mtu(&mut self, mtu: usize) {

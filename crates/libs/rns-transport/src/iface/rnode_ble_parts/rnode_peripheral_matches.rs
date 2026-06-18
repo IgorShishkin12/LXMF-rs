@@ -197,7 +197,10 @@ impl NativeRnodeBleKissInterface {
         self
     }
 
-    pub async fn spawn(context: InterfaceContext<Self>) {
+    pub async fn spawn(
+        context: InterfaceContext<Self>,
+        iface_manager: std::sync::Arc<tokio::sync::Mutex<InterfaceManager>>,
+    ) {
         let iface_stop = context.channel.stop.clone();
         let iface_address = context.channel.address;
         let (rx_channel, mut tx_channel) = context.channel.split();
@@ -260,7 +263,12 @@ impl NativeRnodeBleKissInterface {
                     mtu,
                     label
                 ),
-                Some(mtu) => log::info!("RNode BLE negotiated ATT MTU {} iface={}", mtu, label),
+                Some(mtu) => {
+                    log::info!("RNode BLE negotiated ATT MTU {} iface={}", mtu, label);
+                    let att_payload = (mtu as usize).saturating_sub(3);
+                    let effective_mtu = att_payload.min(config.mtu);
+                    iface_manager.lock().await.set_mtu(iface_address, effective_mtu);
+                }
                 None => log::debug!(
                     "RNode BLE negotiated ATT MTU unknown (macOS or non-native backend) iface={}",
                     label

@@ -58,6 +58,15 @@ mod tests {
     }
 
     #[test]
+    fn set_mtu_updates_registered_iface_mtu() {
+        let mut mgr = InterfaceManager::new(16);
+        let context = mgr.new_context(crate::iface::kiss::KissInterface::new("ttyUSB0", 57_600).with_mtu(220));
+        assert!(mgr.set_mtu(*context.channel.address(), 185));
+        assert_eq!(mgr.mtu(context.channel.address()), Some(185));
+        assert!(!mgr.set_mtu(crate::hash::AddressHash::new([0xff; 16]), 100));
+    }
+
+    #[test]
     fn set_announce_pacing_updates_registered_iface() {
         let mut mgr = InterfaceManager::new(16);
         let channel = mgr.new_channel(16);

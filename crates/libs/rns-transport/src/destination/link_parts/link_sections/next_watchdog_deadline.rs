@@ -166,19 +166,20 @@ impl Link {
         &self.id
     }
 
-    pub fn mtu(&self) -> Option<usize> {
-        self.signalling.map(|bytes| {
-            let value = ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32;
-            (value & LINK_MTU_MASK) as usize
-        })
+    /// MTU of the local interface this link uses, read live from the interface
+    /// manager. Returns `None` if the link has no ingress interface yet (not yet
+    /// activated) or the interface is not registered.
+    pub fn mtu(&self, iface_manager: &InterfaceManager) -> Option<usize> {
+        iface_manager.mtu(&self.ingress_iface?)
     }
 
-    pub fn packet_mdu(&self) -> usize {
-        const OVERHEAD: usize = 36; // max header (35) + IFAC min (1)
-        self.mtu()
-            .filter(|&m| m > OVERHEAD)
-            .map(|m| m - OVERHEAD)
-            .unwrap_or(PACKET_MDU) // default link MDU when no MTU was negotiated
+    /// Usable payload bytes per resource chunk on this link's local interface.
+    /// Subtracts the maximum packet header and IFAC overhead from the live MTU.
+    /// Returns `None` for the same reasons as `mtu()`.
+    pub fn packet_mdu(&self, iface_manager: &InterfaceManager) -> Option<usize> {
+        const OVERHEAD: usize = 2 + 1 + ADDRESS_HASH_SIZE * 2 + 1; // HEADER_MAXSIZE + IFAC_MIN
+        let mtu = self.mtu(iface_manager)?;
+        mtu.checked_sub(OVERHEAD).filter(|&v| v > 0).map(|v| v.min(PACKET_MDU))
     }
 
     pub(crate) fn validate_packet_proof(&self, packet: &Packet) -> Result<Hash, RnsError> {

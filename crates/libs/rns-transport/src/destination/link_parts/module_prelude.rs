@@ -28,6 +28,8 @@ use crate::{
     },
 };
 
+use crate::iface::InterfaceManager;
+
 use super::DestinationDesc;
 
 const LINK_MTU_SIZE: usize = 3;

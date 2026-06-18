@@ -159,6 +159,15 @@ impl InterfaceManager {
         self.ifaces.iter().find(|i| i.full_hash == *full_hash).map(|i| i.address)
     }
 
+    pub fn set_mtu(&mut self, address: AddressHash, mtu: usize) -> bool {
+        if let Some(iface) = self.ifaces.iter_mut().find(|i| i.address == address) {
+            iface.mtu = mtu;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn set_mode(&mut self, address: AddressHash, mode: InterfaceMode) -> bool {
         if let Some(iface) = self.ifaces.iter_mut().find(|i| i.address == address) {
             iface.mode = mode;

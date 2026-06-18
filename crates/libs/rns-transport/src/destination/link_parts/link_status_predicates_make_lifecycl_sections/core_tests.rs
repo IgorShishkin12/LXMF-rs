@@ -58,9 +58,6 @@
             Link::new_from_request(&request, signer.sign_key().clone(), destination, tx)
                 .expect("link request should parse");
         assert_eq!(inbound.signalling, Some([0x20, 0x01, 0xF3]));
-        // 0x2001F3 & LINK_MTU_MASK (0x1FFFFF) == 499, MDU = 499 - 36 overhead.
-        assert_eq!(inbound.mtu(), Some(499));
-        assert_eq!(inbound.packet_mdu(), 463);
 
         let proof = inbound.prove();
         assert_eq!(

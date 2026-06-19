@@ -294,6 +294,10 @@ async fn send_resource_returns_error_when_advertisement_dispatch_drops() {
     ));
 
     let link_id = *outbound.id();
+    // Set interface MTU so send_resource() can call link.mtu() — the transport normally
+    // does this via set_iface_mtu() when the iface is registered in the iface_manager,
+    // but this test creates a bare iface hash that is not registered.
+    outbound.set_iface_mtu(crate::resource::DEFAULT_RESOURCE_INTERFACE_MTU);
     handler.lock().await.out_links.insert(destination.address_hash, Arc::new(Mutex::new(outbound)));
     let mut resource_events = transport.resource_events();
 
@@ -342,6 +346,8 @@ async fn cancel_resource_sends_initiator_cancel_and_removes_outbound_state() {
     ));
 
     let link_id = *outbound.id();
+    // Set interface MTU so send_resource() can call link.mtu().
+    outbound.set_iface_mtu(crate::resource::DEFAULT_RESOURCE_INTERFACE_MTU);
     let outbound = Arc::new(Mutex::new(outbound));
     handler.lock().await.out_links.insert(destination.address_hash, outbound.clone());
     let mut resource_events = transport.resource_events();

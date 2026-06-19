@@ -370,7 +370,6 @@ mod tests {
         assert!(max_advertised_parts(MAX_INBOUND_RESOURCE_TRANSFER_SIZE + 1, PACKET_MDU).is_err());
     }
 
-    include!("tests_mtu.rs");
     include!("tests_timeouts.rs");
     include!("tests_timeouts_lifecycle.rs");
 
@@ -397,5 +396,56 @@ mod tests {
         };
         buffer.resize(plain_len);
         ResourceAdvertisement::unpack(buffer.as_slice()).expect("advertisement")
+    }
+
+    include!("tests_mtu.rs");
+
+    /// send_resource uses link.mtu() — when a link has iface_mtu=220 set on activation
+    /// the ResourceSender it creates must constrain parts to the LoRa MTU.
+    #[test]
+    fn resource_sender_with_lora_link_mtu_constrains_chunks_to_mtu() {
+        const LORA_MTU: usize = 220;
+
+        let signer = PrivateIdentity::new_from_rand(OsRng);
+        let identity = *signer.as_identity();
+        let destination = DestinationDesc {
+            identity,
+            address_hash: identity.address_hash,
+            name: DestinationName::new("lxmf", "resource"),
+        };
+        let (tx, _) = tokio::sync::broadcast::channel(4);
+        let mut outbound = Link::new(destination, tx.clone());
+        let request = outbound.request();
+        let mut inbound =
+            Link::new_from_request(&request, signer.sign_key().clone(), destination, tx)
+                .expect("link request");
+        let iface = AddressHash::new_from_rand(OsRng);
+        assert!(matches!(outbound.handle_packet(&inbound.prove(), iface), LinkHandleResult::Activated));
+
+        // Simulate what the transport does when the link activates on a LoRa interface.
+        outbound.set_iface_mtu(LORA_MTU);
+        assert_eq!(outbound.mtu(), LORA_MTU);
+
+        let sender = ResourceSender::new_with_options_mtu(
+            &outbound,
+            vec![0x42; PACKET_MDU * 4],
+            None,
+            None,
+            false,
+            outbound.mtu(),
+        )
+        .expect("resource sender");
+
+        for part in &sender.parts {
+            let packet =
+                build_link_packet(&outbound, PacketType::Data, PacketContext::Resource, part)
+                    .expect("resource part packet");
+            assert!(
+                packet.to_bytes().expect("wire bytes").len() <= LORA_MTU,
+                "chunk on wire ({}) exceeds LoRa MTU ({})",
+                packet.to_bytes().unwrap().len(),
+                LORA_MTU
+            );
+        }
     }
 }

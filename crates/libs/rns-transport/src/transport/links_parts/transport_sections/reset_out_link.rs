@@ -247,7 +247,17 @@ impl Transport {
         metadata: Option<Vec<u8>>,
     ) -> Result<Hash, RnsError> {
         let link = self.find_any_link(link_id).await.ok_or(RnsError::InvalidArgument)?;
-        let interface_mtu = link.lock().await.mtu();
+        let (interface_mtu, link_rtt) = {
+            let g = link.lock().await;
+            (g.mtu(), g.rtt())
+        };
+        log::debug!(
+            "send_resource: link={} interface_mtu={} link_rtt={:.1}s data_len={}",
+            link_id,
+            interface_mtu,
+            link_rtt.as_secs_f32(),
+            data.len(),
+        );
         let mut handler = self.handler.lock().await;
         let link_guard = link.lock().await;
         let (resource_hash, packet) = handler.resource_manager.start_send_with_mtu(

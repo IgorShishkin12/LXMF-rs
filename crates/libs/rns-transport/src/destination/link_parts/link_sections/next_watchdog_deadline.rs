@@ -166,6 +166,11 @@ impl Link {
         &self.id
     }
 
+    /// Round-trip time estimate for this link. Zero until the link activates.
+    pub fn rtt(&self) -> Duration {
+        self.rtt
+    }
+
     /// MTU of the local interface this link uses. Set by the transport when the
     /// link activates, and updated dynamically (e.g. after BLE ATT negotiation).
     /// Panics if called before the link is active (iface_mtu not yet set).

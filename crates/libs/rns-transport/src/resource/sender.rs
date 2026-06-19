@@ -16,6 +16,9 @@ struct ResourceSender {
     max_retries: u8,
     retries_left: u8,
     status: ResourceStatus,
+    /// Minimum time between advertisement retransmits — at least the link RTT so the
+    /// receiver has time to respond before the sender retries.
+    min_retry_interval: Duration,
 }
 
 enum OutboundResourcePoll {
@@ -140,6 +143,13 @@ impl ResourceSender {
             &advertisement.pack()?,
         )?;
         let now = Instant::now();
+        // Use the link's RTT as the minimum retry interval so that, for slow
+        // links (e.g. LoRa RTT ~24 s), we don't exhaust retries before the
+        // receiver's response can physically arrive back.  Python Reticulum uses
+        // rtt×2; we use max(DEFAULT, rtt) to keep fast-link behaviour unchanged.
+        let link_rtt = link.rtt();
+        let min_retry_interval =
+            Duration::from_secs(DEFAULT_RESOURCE_RETRY_INTERVAL_SECS).max(link_rtt);
 
         Ok(Self {
             link_id: *link.id(),
@@ -156,6 +166,7 @@ impl ResourceSender {
             max_retries: 0,
             retries_left: 0,
             status: ResourceStatus::None,
+            min_retry_interval,
         })
     }
 
@@ -174,14 +185,27 @@ impl ResourceSender {
     }
 
     fn poll(&mut self, now: Instant, retry_interval: Duration) -> OutboundResourcePoll {
+        let retry_interval = retry_interval.max(self.min_retry_interval);
         match self.status {
             ResourceStatus::Advertised => {
                 if now.duration_since(self.adv_sent) < retry_interval {
                     return OutboundResourcePoll::None;
                 }
                 if self.retries_left == 0 {
+                    log::warn!(
+                        "resource sender: advertisement retries exhausted hash={} link={} max_retries={}",
+                        self.resource_hash,
+                        self.link_id,
+                        self.max_retries,
+                    );
                     return OutboundResourcePoll::Failed;
                 }
+                log::debug!(
+                    "resource sender: retransmitting advertisement hash={} link={} retries_left={}",
+                    self.resource_hash,
+                    self.link_id,
+                    self.retries_left,
+                );
                 self.retries_left -= 1;
                 self.last_activity = now;
                 self.adv_sent = now;

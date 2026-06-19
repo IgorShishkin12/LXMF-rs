@@ -96,6 +96,10 @@ async fn oversized_opportunistic_delivery_falls_back_to_link_delivery() {
         outbound_link.lock().await.handle_packet(&inbound.prove(), iface),
         rns_transport::destination::link::LinkHandleResult::Activated
     ));
+    outbound_link
+        .lock()
+        .await
+        .set_iface_mtu(500);
 
     let advertisement = tokio::time::timeout(Duration::from_secs(2), channel.tx_channel.recv())
         .await
@@ -179,6 +183,10 @@ async fn propagated_link_send_tracks_resource_with_propagated_status() {
         propagation_link.lock().await.handle_packet(&inbound.prove(), iface),
         rns_transport::destination::link::LinkHandleResult::Activated
     ));
+    propagation_link
+        .lock()
+        .await
+        .set_iface_mtu(500);
 
     let (receipt_tx, mut receipt_rx) = tokio::sync::mpsc::channel(16);
     let outbound_resource_map = Arc::new(Mutex::new(HashMap::new()));

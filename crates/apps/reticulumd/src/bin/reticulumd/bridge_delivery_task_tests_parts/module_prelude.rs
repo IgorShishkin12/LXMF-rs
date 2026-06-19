@@ -167,6 +167,9 @@ async fn tracked_outbound_resource_cancel_sends_resource_cancel_frame() {
         link.lock().await.handle_packet(&inbound.prove(), iface),
         rns_transport::destination::link::LinkHandleResult::Activated
     ));
+    link.lock()
+        .await
+        .set_iface_mtu(500);
     let link_id = *link.lock().await.id();
 
     let resource_hash = transport
@@ -271,6 +274,9 @@ async fn resource_cancel_monitor_aborts_resource_after_late_cancel() {
         link.lock().await.handle_packet(&inbound.prove(), iface),
         rns_transport::destination::link::LinkHandleResult::Activated
     ));
+    link.lock()
+        .await
+        .set_iface_mtu(500);
     let link_id = *link.lock().await.id();
 
     let resource_hash = transport

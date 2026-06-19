@@ -203,6 +203,7 @@ impl ResourceManager {
         let resource_hash = advertisement.hash;
         if self.incoming.get(&resource_hash).is_some_and(|receiver| receiver.is_active()) {
             resource_diag(&format!("advertisement_duplicate hash={resource_hash}"));
+            log::debug!("resource inbound: duplicate advertisement for active receiver hash={}", resource_hash);
             return;
         }
         let receiver = if interface_mtu == DEFAULT_RESOURCE_INTERFACE_MTU {
@@ -215,6 +216,13 @@ impl ResourceManager {
             resource_diag("reject_advertisement unreasonable");
             return;
         };
+        log::debug!(
+            "resource inbound: accepting advertisement hash={} link={} parts={} mtu={}",
+            resource_hash,
+            link.id(),
+            advertisement.parts,
+            interface_mtu,
+        );
         let adv_now = Instant::now();
         let rtt = self.link_stats.entry(*link.id()).or_insert_with(LinkStats::new).rtt;
         let request = receiver.build_request(adv_now, rtt);

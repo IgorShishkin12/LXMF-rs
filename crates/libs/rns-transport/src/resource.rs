@@ -102,6 +102,10 @@ impl LinkStats {
         }
     }
 
+    pub(crate) fn new_with_rtt(rtt: Duration) -> Self {
+        Self { rtt, ..Self::new() }
+    }
+
     pub(crate) fn update_rtt(&mut self, sample: Duration) {
         self.rtt = ewma(self.rtt, sample);
     }

@@ -96,7 +96,12 @@ impl ResourceManager {
             }
         }
         for hash in failed {
-            self.incoming.remove(&hash);
+            if let Some(r) = self.incoming.remove(&hash) {
+                log::warn!(
+                    "resource inbound: receiver timed out after {} retries hash={} link={} parts={}/{}",
+                    r.retry_count, hash, r.link_id, r.received, r.parts.len(),
+                );
+            }
         }
         requests
     }
@@ -224,7 +229,28 @@ impl ResourceManager {
             interface_mtu,
         );
         let adv_now = Instant::now();
-        let rtt = self.link_stats.entry(*link.id()).or_insert_with(LinkStats::new).rtt;
+        // Seed link stats from the link's own stale-detection window so the
+        // fragment loss threshold starts at a reasonable value for slow links
+        // (e.g. LoRa stale_timeout≈12s → loss_threshold=24s).  EWMA updates
+        // toward real measurements as parts arrive.
+        // When rtt == 0 the link has not activated yet (stale_timeout = 5 s,
+        // the bare STALE_GRACE_SECS constant); use the default 500 ms seed in
+        // that case so the inbound EWMA can converge from a sensible baseline.
+        let link_rtt = link.rtt();
+        let rtt = self.link_stats.entry(*link.id())
+            .or_insert_with(|| {
+                if link_rtt == Duration::ZERO {
+                    LinkStats::new()
+                } else {
+                    let link_stale = link.stale_timeout();
+                    log::debug!(
+                        "resource inbound: seeding link_stats rtt={:.1}s link={}",
+                        link_stale.as_secs_f32(), link.id()
+                    );
+                    LinkStats::new_with_rtt(link_stale)
+                }
+            })
+            .rtt;
         let request = receiver.build_request(adv_now, rtt);
         resource_diag(&format!(
             "request_parts hash={} requested={} exhausted={}",

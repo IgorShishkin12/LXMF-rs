@@ -153,8 +153,15 @@ impl ResourceSender {
         // the link stale".  Using 2× that window as the minimum retry interval
         // ensures we give the receiver the full stale window to respond before
         // we decide the advertisement was lost.
-        let min_retry_interval = Duration::from_secs(DEFAULT_RESOURCE_RETRY_INTERVAL_SECS)
-            .max(link.stale_timeout() * 2);
+        //
+        // When rtt == 0 the link has not activated yet; stale_timeout() collapses
+        // to just STALE_GRACE_SECS (5 s), giving a 10 s floor that is wrong for
+        // non-slow links.  In that case we fall back to the default interval.
+        let min_retry_interval = if link.rtt() == Duration::ZERO {
+            Duration::from_secs(DEFAULT_RESOURCE_RETRY_INTERVAL_SECS)
+        } else {
+            Duration::from_secs(DEFAULT_RESOURCE_RETRY_INTERVAL_SECS).max(link.stale_timeout() * 2)
+        };
 
         Ok(Self {
             link_id: *link.id(),
@@ -221,8 +228,17 @@ impl ResourceSender {
                     return OutboundResourcePoll::None;
                 }
                 if self.retries_left == 0 {
+                    log::warn!(
+                        "resource sender: transfer timed out (no request received within {:.0}s) hash={} link={}",
+                        retry_interval.as_secs_f32(), self.resource_hash, self.link_id,
+                    );
                     return OutboundResourcePoll::Failed;
                 }
+                log::debug!(
+                    "resource sender: transfer idle {:.0}s, retries_left={} hash={} link={}",
+                    now.duration_since(self.last_activity).as_secs_f32(),
+                    self.retries_left, self.resource_hash, self.link_id,
+                );
                 self.retries_left -= 1;
                 self.last_activity = now;
                 OutboundResourcePoll::None
@@ -325,6 +341,7 @@ impl ResourceSender {
 
         if self.status.accepts_transfer_activity() {
             let now = Instant::now();
+            let prev_status = self.status;
             self.last_activity = now;
             self.retries_left = self.max_retries;
             if sent_any {
@@ -332,11 +349,15 @@ impl ResourceSender {
             }
             if self.sent_parts.iter().all(|sent| *sent) {
                 self.status = ResourceStatus::AwaitingProof;
-                // Once all parts are sent, only wait a small, bounded number of
-                // retry intervals for the terminal proof before timing out.
                 self.retries_left = self.max_retries.clamp(1, MAX_AWAITING_PROOF_RETRIES);
             } else {
                 self.status = ResourceStatus::Transferring;
+            }
+            if prev_status == ResourceStatus::Advertised && self.status == ResourceStatus::Transferring {
+                log::info!(
+                    "resource sender: first request received, transfer started hash={} link={} parts={}",
+                    self.resource_hash, self.link_id, self.parts.len(),
+                );
             }
         }
     }

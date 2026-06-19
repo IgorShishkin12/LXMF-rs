@@ -143,13 +143,18 @@ impl ResourceSender {
             &advertisement.pack()?,
         )?;
         let now = Instant::now();
-        // Use the link's RTT as the minimum retry interval so that, for slow
-        // links (e.g. LoRa RTT ~24 s), we don't exhaust retries before the
-        // receiver's response can physically arrive back.  Python Reticulum uses
-        // rtt×2; we use max(DEFAULT, rtt) to keep fast-link behaviour unchanged.
-        let link_rtt = link.rtt();
-        let min_retry_interval =
-            Duration::from_secs(DEFAULT_RESOURCE_RETRY_INTERVAL_SECS).max(link_rtt);
+        // Python Reticulum uses rtt*2 for the advertisement retry interval, which
+        // works when link.rtt() reflects data-packet latency.  Our link.rtt() is
+        // the handshake RTT (small packets, no queue delay) and understates the
+        // actual round-trip for larger packets on congested links such as LoRa.
+        // The link's stale-detection window — rtt × KEEPALIVE_TIMEOUT_FACTOR +
+        // STALE_GRACE_SECS — already accounts for link characteristics and
+        // represents the "maximum time to wait for any response before declaring
+        // the link stale".  Using 2× that window as the minimum retry interval
+        // ensures we give the receiver the full stale window to respond before
+        // we decide the advertisement was lost.
+        let min_retry_interval = Duration::from_secs(DEFAULT_RESOURCE_RETRY_INTERVAL_SECS)
+            .max(link.stale_timeout() * 2);
 
         Ok(Self {
             link_id: *link.id(),

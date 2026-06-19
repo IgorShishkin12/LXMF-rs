@@ -171,6 +171,15 @@ impl Link {
         self.rtt
     }
 
+    /// Upper bound on one-way delivery time for this link — the same window the
+    /// stale-detection logic uses: `rtt × KEEPALIVE_TIMEOUT_FACTOR + STALE_GRACE_SECS`.
+    /// Double this to get a conservative full-round-trip budget.
+    pub fn stale_timeout(&self) -> Duration {
+        Duration::from_secs_f32(
+            (self.rtt.as_secs_f32() * KEEPALIVE_TIMEOUT_FACTOR) + STALE_GRACE_SECS,
+        )
+    }
+
     /// MTU of the local interface this link uses. Set by the transport when the
     /// link activates, and updated dynamically (e.g. after BLE ATT negotiation).
     /// Panics if called before the link is active (iface_mtu not yet set).

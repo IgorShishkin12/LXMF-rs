@@ -1,7 +1,12 @@
 use lxmf_core::announce::display_name_from_delivery_app_data;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+
+#[path = "messaging/conversation.rs"]
+mod conversation;
+pub use conversation::{ConversationListPage, ConversationListRequest, ConversationRecord};
 
 pub const DESTINATION_KIND_APP: &str = "app";
 pub const DESTINATION_KIND_LXMF_DELIVERY: &str = "lxmf_delivery";
@@ -25,16 +30,27 @@ pub enum MessageMethod {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageState {
+    #[serde(alias = "queued")]
     Queued,
+    #[serde(alias = "path_requested")]
     PathRequested,
+    #[serde(alias = "link_establishing")]
     LinkEstablishing,
+    #[serde(alias = "sending")]
     Sending,
+    #[serde(alias = "sent_direct")]
     SentDirect,
+    #[serde(alias = "sent_to_propagation")]
     SentToPropagation,
+    #[serde(alias = "delivered")]
     Delivered,
+    #[serde(alias = "failed")]
     Failed,
+    #[serde(alias = "timed_out")]
     TimedOut,
+    #[serde(alias = "cancelled")]
     Cancelled,
+    #[serde(alias = "received")]
     Received,
 }
 
@@ -109,17 +125,6 @@ pub struct PeerRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConversationRecord {
-    pub conversation_id: String,
-    pub peer_destination_hex: String,
-    pub peer_display_name: Option<String>,
-    pub last_message_preview: Option<String>,
-    pub last_message_at_ms: u64,
-    pub unread_count: u32,
-    pub last_message_state: Option<MessageState>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageRecord {
     pub message_id_hex: String,
     pub conversation_id: String,
@@ -134,6 +139,43 @@ pub struct MessageRecord {
     pub sent_at_ms: Option<u64>,
     pub received_at_ms: Option<u64>,
     pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageHistoryListRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_receipts: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_ts: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MessageHistoryPage {
+    pub messages: Vec<MessageHistoryRecord>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MessageHistoryRecord {
+    #[serde(alias = "message_id")]
+    pub id: String,
+    pub source: String,
+    pub destination: String,
+    pub title: String,
+    #[serde(alias = "body")]
+    pub content: String,
+    pub timestamp: i64,
+    pub direction: String,
+    pub fields: Option<JsonValue>,
+    pub receipt_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

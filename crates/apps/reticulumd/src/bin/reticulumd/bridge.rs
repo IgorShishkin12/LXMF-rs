@@ -10,6 +10,7 @@ mod delivery_method;
 mod delivery_scheduler;
 #[path = "bridge_delivery_task.rs"]
 mod delivery_task;
+pub(crate) use delivery_task::emit_receipt_event;
 #[path = "bridge_delivery_task_cancel.rs"]
 mod delivery_task_cancel;
 #[path = "bridge_delivery_task_payload.rs"]
@@ -47,10 +48,12 @@ use super::outbound_resources::{
 };
 use reticulum_daemon::receipt_bridge::{track_receipt_mapping, ReceiptEvent};
 use rns_core::identity::PrivateIdentity;
-use rns_rpc::{RpcDaemon, RpcRequest};
+use rns_rpc::RpcDaemon;
+#[cfg(test)]
+use rns_rpc::RpcRequest;
 use rns_transport::delivery::await_link_activation;
 use rns_transport::delivery::{
-    send_on_link, send_outcome_is_sent, send_outcome_status, LinkSendResult,
+    send_on_link_observed, send_outcome_is_sent, send_outcome_status, LinkSendResult,
 };
 use rns_transport::destination::{
     link::{Link, LinkStatus},

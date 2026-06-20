@@ -33,6 +33,48 @@ impl ZmqPipelineBackendClient {
         })
     }
 
+    pub(super) fn parse_optional_u32(
+        value: &JsonValue,
+        key: &'static str,
+    ) -> Result<Option<u32>, SdkError> {
+        match value.get(key) {
+            None | Some(JsonValue::Null) => Ok(None),
+            Some(raw) => {
+                let raw = raw.as_u64().ok_or_else(|| {
+                    SdkError::new(
+                        code::INTERNAL,
+                        ErrorCategory::Internal,
+                        format!("rpc response field '{key}' must be an unsigned integer"),
+                    )
+                })?;
+                let parsed = u32::try_from(raw).map_err(|_| {
+                    SdkError::new(
+                        code::INTERNAL,
+                        ErrorCategory::Internal,
+                        format!("rpc response field '{key}' is out of range"),
+                    )
+                })?;
+                Ok(Some(parsed))
+            }
+        }
+    }
+
+    pub(super) fn parse_optional_string(
+        value: &JsonValue,
+        key: &'static str,
+    ) -> Result<Option<String>, SdkError> {
+        match value.get(key) {
+            None | Some(JsonValue::Null) => Ok(None),
+            Some(raw) => raw.as_str().map(str::to_owned).map(Some).ok_or_else(|| {
+                SdkError::new(
+                    code::INTERNAL,
+                    ErrorCategory::Internal,
+                    format!("rpc response field '{key}' must be a string"),
+                )
+            }),
+        }
+    }
+
     pub(super) fn parse_optional_string_or_default(
         value: &JsonValue,
         key: &'static str,

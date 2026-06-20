@@ -1,6 +1,6 @@
 # Current Roadmap Status
 
-Last reassessed: 2026-06-08
+Last reassessed: 2026-06-19
 
 This file is the repository-level source of truth for parity posture, release
 confidence, and execution order. Detailed row-level status lives in:
@@ -24,7 +24,7 @@ The project is best described by capability level:
 | --- | --- | --- |
 | Wire compatible | achieved | Core Reticulum packet/identity primitives and LXMF message encodings are implemented and tested. |
 | Direct-message interoperable | achieved | Selected bidirectional Rust/Python direct, link, channel, paper, and daemon paths are exercised in CI. |
-| Propagation interoperable | partial | Propagated delivery and substantial peer/node behavior exist, but the complete Python router and peer lifecycle is not yet reproduced. |
+| Propagation interoperable | achieved | Propagated delivery, complete Python-only `LXMPeer.py` lifecycle coverage, and Python-reference propagation router fetch/download/sync lifecycle coverage are implemented and tested. |
 | Operationally substitutable | partial | `reticulumd` is deployable and supports several production interfaces, but runtime, interface, and utility breadth remains narrower than Python. |
 | Full Python surface parity | not achieved | Remaining gaps are tracked in the two parity matrices. |
 
@@ -53,10 +53,23 @@ The project is best described by capability level:
 - Message wire/storage packing, signatures, propagation packing, paper
   encoding, timestamp precision metadata, binary-field preservation, and
   Python-compatible storage containers are implemented.
+- Documented basic LXMF field IDs are exported through `lxmf-wire`, and the
+  typed ZeroMQ SDK send path preserves those field keys plus
+  `_lxmf_fields_msgpack_b64` for REM/RCH payload compatibility.
+- The typed ZeroMQ SDK send and batch-send paths now treat payload `body` as
+  message content when `content` is absent, while still preserving `body` in
+  fields, so direct-chat links/body text do not get JSON-stringified.
 - Delivery modes are honored by the daemon; the old claim that requested modes
   are ignored is obsolete.
 - Direct and propagated resource sends support receipt-state separation,
   timeout/failure propagation, and active resource cancellation.
+- Link sends now register packet/resource receipt tracking before handoff and
+  accept Python-style link proofs with default packet context, so Python
+  delivery receipts can advance daemon-originated sends from `sent:*` to
+  `delivered` while preserving resource completion status.
+- The typed ZeroMQ SDK delivery status path now preserves daemon-reported
+  retry-attempt counts and reason codes in `DeliverySnapshot`, so REM/RCH can
+  inspect retry and recovery state without dropping to raw RPC status calls.
 - Ticket validity, renewal, derivation, persistence, and inbound ticket reuse
   are implemented.
 - Propagation peers have real queue, policy, maintenance, throttling, peering,
@@ -102,6 +115,9 @@ The project is best described by capability level:
 - Remote fetch/download/sync imports now validate the full returned propagation
   payload batch before mutating the local store or in-memory payload cache, so a
   mixed valid/invalid remote response fails without leaving partial relay state.
+- Remote fetch/download/sync imports now also reject payloads for ignored
+  destinations during batch validation, so remote relay responses cannot bypass
+  local replication policy or queue ignored work to peers.
 - Malformed remote fetch and download imports now mirror existing
   payload-backed live queue marks into active peer record snapshots before
   failing, preserving restart/export retry state for already queued relay work.
@@ -128,6 +144,10 @@ The project is best described by capability level:
   returning and mark the propagation sync lifecycle failed, so already queued
   relay work stays restart/export visible without leaving stale lifecycle state
   when no bridge is configured.
+- Remote fetch and download bridge envelopes that return successfully while
+  reporting `postponed` or `synced: false` now preserve the failed transfer
+  lifecycle, source-peer backoff, peer event, and queue snapshot instead of
+  importing an empty result and marking propagation complete.
 - Successful remote fetch and download now also mirror existing payload-backed
   live queue marks into active peer record snapshots after applying imports, so
   restart/export state preserves queued retry work even when the remote
@@ -148,8 +168,9 @@ The project is best described by capability level:
   case-insensitive requests, while still avoiding peer creation when the bridge
   is absent.
 - Remote peer-sync bridge-unavailable errors for already known peers now also
-  publish the failed peer-sync event and mark the propagation sync lifecycle
-  failed, keeping queue retry state observable without creating new peers.
+  advance that peer's retry backoff, publish the failed peer-sync event, and
+  mark the propagation sync lifecycle failed, keeping queue retry state
+  observable without creating new peers.
 - Peer sync RPC rows and events now preserve the Python-compatible peer `state`
   namespace while exposing backoff and policy postponement through separate
   scheduling fields; failed attempts continue to use the established error state.
@@ -164,12 +185,28 @@ The project is best described by capability level:
 - Remote peer-sync now uses the stored peer ID case for the bridge call, import
   source accounting, state updates, and response envelope when callers use a
   case-variant peer request.
+- Remote peer-sync bridge results that explicitly report `synced: false` or
+  `postponed: true` now preserve the remote postponement in the peer-sync
+  result/event and keep retry scheduling intact instead of clearing the peer's
+  backoff as if the transfer completed.
 - Failed remote unpeer attempts now mirror existing payload-backed live queue
   marks and restored peer-record queue IDs into active peer record snapshots
   before returning bridge-unavailable or bridge-execution errors, including
   case-insensitive peer requests, so restart/export state preserves queued retry
   work when peering teardown fails; these failed attempts also mark the
   propagation lifecycle failed instead of leaving stale idle/completed state.
+- Failed remote unpeer bridge-unavailable errors for active peers now also
+  publish the failed peer-sync event after queue snapshot refresh, keeping
+  observer-visible peering failure state aligned with remote sync/fetch/download
+  bridge-unavailable failures.
+- Failed remote unpeer bridge-execution errors for active peers now also
+  advance the peer's retry backoff window before refreshing queue snapshots, so
+  failed peering teardown does not leave retryable queue work in an immediate
+  retry loop.
+- Failed remote unpeer bridge-execution errors for active peers now also
+  publish the failed peer-sync event after queue snapshot refresh, keeping
+  observer-visible peering failure state aligned with remote sync/fetch/download
+  failures.
 - Access-denied remote unpeer failures now follow the same local peering break
   path as access-denied remote sync/fetch/download, clearing local peer and
   propagation queue state instead of leaving denied teardown work retryable.
@@ -179,6 +216,15 @@ The project is best described by capability level:
 - Successful remote unpeer now clears stale propagation lifecycle failures and
   error text left by earlier teardown attempts, so status reflects completed
   peer removal instead of a prior failed control operation.
+- Active outbound normal and propagation stamp generation now reports stored
+  generation progress through `get_outbound_progress`, while terminal failed or
+  cancelled stamp states continue to suppress stale progress values.
+- Deferred normal and requested propagated sends now run expensive stamp work
+  in the outbound background worker before delivery handoff. The worker exposes
+  queued and in-flight stamp ownership through `delivery_pipeline`, serializes
+  normal and propagation stamp generation, records retry/cancellation metadata,
+  and prepares propagated resource payloads before link/resource delivery
+  semaphores are acquired.
 - Inbound reticulumd `/pn/peer/sync` and `/pn/peer/unpeer` control commands now
   resolve stored peer IDs case-insensitively before dispatching to daemon RPCs,
   so binary peer-control requests do not report not-found for restored or
@@ -224,6 +270,10 @@ The project is best described by capability level:
 - Restored Python peer records now update their serialized queue ID snapshot
   when peer sync handles, transfers, or transfer-limits queued offers, reducing
   restart/export drift after live offer-response processing.
+- Peer sync offer acceptance now validates all transfer payload hex before
+  marking any offered payload transferred, handled, or transfer-limited, so a
+  malformed response batch cannot partially mutate live marks or serialized
+  restart/export queue snapshots.
 - Restored Python peer records now parse fractional `propagation_sync_limit`
   values through Python's integer-kilobyte restore path before peer-sync queue
   selection, preventing restored fractional sync limits from transferring work
@@ -252,12 +302,22 @@ The project is best described by capability level:
 - Outbound propagated delivery now resolves selected propagation-node
   `propagation_stamp_cost` case-insensitively, so Python-style hash casing does
   not fall back to the default propagation stamp cost.
+- Direct `reticulumd` `[propagation_node]` config now activates the
+  Python-shaped propagation/control destinations, advertises configured stamp
+  costs, exposes outbound propagation cost lookup, and stores self-selected
+  propagated payloads locally instead of linking to its own node.
+- Normal and propagation stamp retry metadata now clears stale stamp error
+  fields when later work re-enters generating/ready state, so status no longer
+  reports a prior failed attempt after a successful retry.
 - Peer sync queue creation also records newly queued existing propagation IDs in
   the peer record snapshot, so postponed syncs can restart/export with the same
   unhandled queue visible in live status.
 - Local peer offer-error responses now publish failed peer-sync state fields at
   both the top-level peer event and nested propagation result while preserving
   the retryable peer queue, improving parity with the peer sync state machine.
+- Ordinary full-offer peer sync now validates the propagation payload batch
+  before marking any queued ID transferred, so a later malformed queued payload
+  cannot partially drain peer retry state.
 - Inbound and remotely imported propagation payloads update active peer record
   snapshots when they queue new unhandled IDs or mark source peers handled,
   keeping restart/export state aligned with live queue fan-out and source
@@ -265,6 +325,219 @@ The project is best described by capability level:
 - Duplicate inbound peer propagation payloads now still apply source-aware
   fan-out to active relay peers while keeping the source peer handled, so a
   known local payload does not skip relay queue creation.
+- The typed ZeroMQ SDK backend now covers identity list/activate/import/export,
+  identity announce, presence list, identity resolve, contact update/list, and
+  identity bootstrap, so REM/RCH peer discovery, identity recovery, and
+  saved-peer setup can use `ZmqPipelineBackendClient` instead of falling back
+  to raw RPC/HTTP identity/contact calls.
+- The typed ZeroMQ SDK backend now also exposes
+  `ZmqPipelineBackendClient::identity_announce` for capability-rich announces,
+  preserving local identity, display name, callsign, REM capability flags, RCH
+  announce-slot metadata, and extensions over `sdk_identity_announce_now_v2`
+  while keeping the no-argument `identity_announce_now` compatibility path.
+- The typed ZeroMQ SDK backend now exposes
+  `ZmqPipelineBackendClient::workflow_peer_ready`, preserving display names,
+  callsigns, trust, bootstrap intent, and REM/RCH capability metadata while
+  optionally announcing before use, so saved-peer setup has a direct typed path.
+- The typed ZeroMQ SDK backend now exposes
+  `ZmqPipelineBackendClient::peer_directory`, merging saved contacts and
+  announce-derived presence over `sdk_identity_contact_list_v2` and
+  `sdk_identity_presence_list_v2` while preserving display names, callsigns,
+  REM capability flags, RCH announce-slot metadata, online state, and
+  first/last-seen timestamps.
+- The typed ZeroMQ SDK backend now exposes
+  `ZmqPipelineBackendClient::peer_directory_since` and a
+  `min_last_seen_ts_ms` presence-list filter, so REM/RCH can suppress stale
+  announce rows over the SDK path while keeping saved contacts visible offline.
+- The typed ZeroMQ SDK backend now exposes saved-peer lifecycle calls through
+  `ZmqPipelineBackendClient::peer_connect`, `peer_disconnect`, and
+  `peer_reconnect`, routing `sdk_peer_*_v2` methods while preserving identity,
+  display name, correlation ID, callsign, REM capability flags, RCH
+  announce-slot metadata, and per-call extensions.
+- The typed ZeroMQ SDK backend now also covers the operation registry and SDK
+  envelope execution path, including `app.message.history.list` and
+  `app.delivery.destination_hash`, so REM/RCH direct-chat history and runtime
+  delivery-destination lookups can stay on `ZmqPipelineBackendClient` instead
+  of constructing raw RPC/HTTP envelopes.
+- The typed ZeroMQ SDK backend now exposes durable direct-chat history through
+  `ZmqPipelineBackendClient::list_message_history`, preserving message bodies
+  with links, receipt status, basic LXMF fields, one-to-one
+  `peer_id`/`conversation_id` filters, `include_receipts`, and restart
+  pagination cursors through the daemon `app.message.history.list` SDK envelope
+  path.
+- The typed ZeroMQ SDK backend now exposes durable direct-chat conversation
+  summaries through `ZmqPipelineBackendClient::list_conversations`, preserving
+  peer display names, unread counts, last-message previews with links, receipt
+  inclusion intent, and restart pagination cursors through
+  `app.message.conversation.list` on the SDK envelope path.
+- `ZmqPipelineBackendClient::list_message_history` now accepts both canonical
+  `id`/`content` records and legacy direct-chat `message_id`/`body` records
+  from `app.message.history.list`, keeping restart-recovered conversation
+  history readable without raw envelope decoding.
+- The typed ZeroMQ SDK backend now exposes the local runtime delivery
+  destination through `ZmqPipelineBackendClient::local_delivery_destination_hash`,
+  while still routing `app.delivery.destination_hash` through SDK envelope
+  execution, so REM/RCH direct-chat source selection does not need raw RPC/HTTP
+  status calls.
+- The typed ZeroMQ SDK backend now tracks negotiated receipt terminality for
+  delivery status, so direct-chat status reports match the SDK contract:
+  `sent` is terminal until `sdk.capability.receipt_terminality` is negotiated,
+  after which `delivered` is the terminal receipt state.
+- The typed ZeroMQ SDK backend now exposes burst sends through
+  `ZmqPipelineBackendClient::send_batch` and still routes
+  `app.delivery.send_batch` envelope calls to `sdk_send_batch_v2`, preserving
+  ordered per-message acceptance and rejection results without raw RPC
+  envelopes.
+- `BatchSendItem` now carries per-message idempotency keys, TTL, correlation
+  IDs, and SDK extensions into each batch message's `_sdk` field metadata, so
+  burst direct-chat retries can remain stable across client restarts.
+- The typed ZeroMQ SDK backend and operation registry now expose direct-chat
+  cancellation through both `ZmqPipelineBackendClient::cancel` and
+  `app.delivery.cancel` envelope execution, preserving daemon cancellation
+  outcomes without raw RPC envelopes.
+- The typed ZeroMQ SDK backend now starts the final propagation-first branch
+  with `ZmqPipelineBackendClient::propagation_peer_sync`, routing
+  `app.propagation.peer_sync` over `sdk_envelope_execute_v2` to the daemon's
+  existing `peer_sync` lifecycle while preserving offer, transfer, postponed,
+  retry, and persistent queue metadata in the typed response.
+- `PropagationPeerSyncResult` now projects daemon `messages` and `propagation`
+  queue fields into a typed `queue` snapshot, including offered/outgoing/
+  incoming/unhandled counters and handled, unhandled, transferred, skipped,
+  rejected, and transfer-limited transient IDs while retaining raw payloads.
+- The typed peer-sync `queue` snapshot now also exposes transferred, skipped,
+  rejected, and transfer-limited counters plus their byte totals, so retry and
+  sync-limit callers do not need raw propagation JSON for queue accounting.
+- `PropagationPeerSyncResult` now falls back to propagation-level transfer and
+  sync limits and exposes target stamp cost plus stamp cost flexibility, so
+  propagation policy metadata stays typed for REM/RCH clients.
+- `PropagationPeerSyncResult` now also exposes typed failure kind,
+  timeout/access-denied classification, and existing retry scheduling fields
+  for postponed peer-sync attempts, so offer and queue retry callers do not
+  need raw propagation JSON for common failure branching.
+- `PropagationPeerSyncResult` now also falls back to propagation-level
+  `postponed` and `postpone_reason` fields when the peer-sync envelope omits
+  top-level values, keeping remote nested peer-sync retry state fully typed.
+- The same ZeroMQ SDK propagation branch now exposes remote router status,
+  fetch, download, sync, and unpeer lifecycle calls through typed
+  `ZmqPipelineBackendClient` methods and registered `app.propagation.*`
+  envelopes, preserving daemon propagation, peer-sync, transfer, denial,
+  timeout, and queue-cleanup payloads without requiring REM/RCH to use raw RPC.
+- `PropagationRemoteSyncResult` now also projects nested remote-sync
+  `peer_sync` payloads into typed `peer_sync_state`, so remote propagation sync
+  callers can inspect sync status and queue transient IDs without parsing raw
+  JSON while still retaining the original daemon payload.
+- `PropagationRemoteSyncResult` now also projects top-level remote-sync
+  propagation cleanup IDs into a typed `queue` snapshot, so transferred,
+  skipped, rejected, and transfer-limited sync work is visible without raw
+  propagation JSON even when nested peer-sync state is incomplete.
+- `PropagationRemoteSyncResult` now also projects its propagation lifecycle and
+  result payloads into typed `transfer_state`, so sync timeout, denial, retry,
+  next-attempt, and last-error handling are visible without raw propagation
+  JSON parsing.
+- `PropagationRemoteStatusResult` now projects remote router status into typed
+  `status_state`, covering lifecycle state, selected node/peer, queue depth,
+  failure kind, timeout/access-denied classification, retry count, next sync
+  attempt, and last error while preserving raw status JSON.
+- `PropagationRemoteTransferResult` now projects remote fetch/download result
+  and propagation lifecycle payloads into typed `transfer_state`, covering
+  sync/postpone status, imported IDs/counts, transferred bytes, progress, and
+  last error while retaining the original daemon JSON.
+- `PropagationRemoteTransferResult` now also projects remote fetch/download
+  propagation queue IDs into typed `queue`, so transferred, skipped, rejected,
+  and transfer-limited transient IDs are visible without raw propagation JSON.
+- `PropagationRemoteTransferState` now also exposes failure kind, timeout and
+  access-denied booleans, retry count, and next sync attempt for remote
+  fetch/download results, so clients can branch on denial and timeout recovery
+  without parsing raw propagation JSON.
+- `PropagationRemoteTransferState` now also exposes `last_sync_started` and
+  `last_sync_completed` for remote fetch/download/sync/unpeer lifecycle
+  results, keeping transfer freshness visible without raw propagation JSON.
+- `PropagationRemoteTransferState` now also exposes selected router context
+  through `selected_node` and `selected_peer` for remote fetch/download/sync/
+  unpeer lifecycle results, keeping peer/router selection visible without raw
+  propagation JSON.
+- Remote fetch/download/sync/unpeer SDK envelopes now convert denied, timed
+  out, and retryable bridge failures into typed result payloads with daemon
+  propagation recovery state, so REM/RCH clients can stay on
+  `ZmqPipelineBackendClient` for failure recovery instead of dropping to raw
+  RPC errors.
+- `PropagationRemoteUnpeerResult` now projects remote unpeer `messages` and
+  propagation cleanup payloads into a typed `queue` snapshot, so denial and
+  teardown cleanup callers can inspect handled, unhandled, transferred,
+  skipped, rejected, and transfer-limited IDs without parsing raw JSON.
+- `PropagationRemoteUnpeerResult` now also projects teardown lifecycle payloads
+  into typed `transfer_state`, so denied or failed unpeer attempts expose
+  failure kind, access-denied/timeout classification, retry scheduling, and
+  last error without parsing raw propagation JSON.
+- The same branch now exposes propagation sync completion/failure
+  acknowledgement as
+  `ZmqPipelineBackendClient::propagation_acknowledge_sync_completion` and
+  `app.propagation.acknowledge_sync_completion`, preserving daemon recovery
+  state for retry, timeout, and restart flows on the typed ZeroMQ SDK path.
+- `PropagationStatusResult` and `PropagationAcknowledgeSyncResult` now project
+  their propagation payloads into typed `recovery_state`, so status, enable,
+  and acknowledgement callers can inspect sync state, retry counts, queue
+  depth, and last error without parsing raw JSON.
+- `PropagationRecoveryStateResult` now also exposes failure kind, timeout and
+  access-denied booleans, and next sync attempt, so local recovery and sync
+  acknowledgement callers can branch on denial/timeout handling without raw
+  propagation JSON.
+- `PropagationRecoveryStateResult` now also exposes the propagation lifecycle
+  `timestamp`, so restart/recovery status callers can inspect daemon recovery
+  freshness without parsing raw propagation JSON.
+- `PropagationRecoveryStateResult` now also exposes local propagation config
+  fields for `auth_required`, `static_peers`, and `sync_limit`, so status and
+  enable/config callers can verify recovery policy without raw propagation JSON.
+- `PropagationRecoveryStateResult` now also exposes propagation storage and
+  transfer-limit config for `store_root`, `target_cost`,
+  `message_storage_limit_mb`, and `propagation_limit`, keeping durable queue
+  policy visible on the typed ZeroMQ SDK path.
+- `PropagationRecoveryStateResult` now also exposes the remaining propagation
+  enable/status config for `stamp_cost_flexibility`, `delivery_limit`,
+  `autopeer`, `autopeer_maxdepth`, `max_peers`, `from_static_only`,
+  `retain_synced_on_node`, `peering_cost`, and `remote_peering_cost_max`, so
+  router/peering policy is visible through the typed ZeroMQ SDK path.
+- The typed propagation branch also exposes outbound propagation router
+  selection and listing as `ZmqPipelineBackendClient::propagation_node_get`,
+  `propagation_node_set`, and `propagation_node_list`, backed by
+  `app.propagation.node.*` envelopes that preserve selected-node and node-list
+  metadata without raw RPC.
+- `PropagationNodeListResult` now projects listed router candidates into typed
+  `PropagationNodeRecord` entries, exposing peer, display name, last-seen time,
+  selected flag, and capability strings while retaining the raw node JSON.
+- `PropagationNodeSelectionResult` now projects node get/set `meta` into typed
+  `selection_state`, exposing selected peer, selection flag, queue depth,
+  failure kind, timeout/access-denied classification, retry scheduling, and
+  last error without parsing raw router metadata.
+- The typed propagation branch now also exposes local propagation status,
+  enable/config, delivery policy get/set, and peer maintenance through
+  `ZmqPipelineBackendClient` methods and `app.propagation.*` envelopes, keeping
+  daemon policy, stale-peer cleanup, and retry/maintenance state visible without
+  raw RPC.
+- `PropagationPeerMaintenanceResult` now projects maintenance-triggered
+  `peer_sync` payloads into typed `peer_sync_state`, so stale-peer cleanup and
+  automatic retry/rotation callers can inspect sync timing and queue transient
+  IDs without parsing raw JSON.
+- The typed propagation branch now exposes local propagation payload ingest and
+  fetch as `ZmqPipelineBackendClient::propagation_ingest` and
+  `propagation_fetch`, backed by `app.propagation.ingest` and
+  `app.propagation.fetch` envelopes that preserve transient IDs, payload bytes,
+  duplicate accounting, and durable store recovery through the ZeroMQ SDK path.
+- `PropagationIngestResult` and `PropagationFetchResult` now also preserve
+  daemon propagation lifecycle payloads and project them into typed
+  `recovery_state`, so disconnected-client ingest/fetch callers can inspect
+  selected node, sync state, queue depth, and local ingest/serve counters
+  without parsing raw propagation JSON.
+- `PropagationDeliveryPolicyResult` now projects delivery policy payloads into
+  typed `policy_state`, so propagation-first clients can inspect auth-required
+  mode plus allowed, denied, ignored, and prioritised destination sets without
+  parsing raw policy JSON.
+- The typed propagation branch now also exposes
+  `ZmqPipelineBackendClient::propagation_recovery_state`, projecting
+  `app.propagation.status` into structured sync state, selected-node,
+  last-error, retry count, queue depth, timestamp, and local ingest/serve
+  counters while retaining the raw propagation payload for queue recovery
+  diagnostics.
 - Locally delivered inbound peer propagation payloads now also store the
   accepted transient and apply source-aware relay fan-out without double
   counting source peer activity, so local delivery does not bypass relay queue
@@ -475,38 +748,26 @@ The project is best described by capability level:
 These are blockers to a broad "Python replacement" claim, not blockers to using
 the implemented subset.
 
-1. **Propagation router lifecycle**
-   - Complete peer offer, transfer, retry, fetch, download, and synchronization
-     behavior across success, denial, timeout, identity, and restart paths.
-   - Close remaining `LXMRouter` side effects and persistent queue semantics.
-2. **Deferred stamp lifecycle**
-   - Add Python-style background work ownership, queueing, retry, cancellation,
-     and progress behavior for expensive normal and propagation stamps.
-3. **Interop breadth**
-   - Add bidirectional live Python cases for every claimed delivery mode and
-     newly completed peer/router row.
-   - Propagation remote-status/control now has dispatchable compatibility cases
-     for Python control-path discovery, Rust-to-Python remote status, and
-     Python-origin `/get` haves acknowledgement and `/offer` side effects;
-     broader peer/router row coverage still needs additional live scenarios.
+1. **Interop breadth**
+   - Propagation router lifecycle now has dispatchable Python-reference cases
+     for remote status, Rust-to-Python fetch/download/sync, Python-origin
+     `/get` haves acknowledgement, and Python-origin `/offer` side effects.
    - Capture release evidence for Sideband, MeshChatX, and Columba before making
      client-specific compatibility claims.
-4. **Reticulum behavioral breadth**
-   - Finish channel ordering, resolver/bootstrap, announce/path edge behavior,
-     and runtime mutation parity.
-5. **Operational breadth**
+2. **Reticulum behavioral breadth**
+   - Finish resolver/bootstrap, announce/path edge behavior, and runtime
+     mutation parity.
+3. **Operational breadth**
    - Add prepared-host hardware evidence for BLE/RNode paths.
    - Implement or explicitly defer missing Python interface families and
      utility commands.
 
 ## Active Execution Order
 
-1. Finish propagation peer/router state machines.
-2. Finish deferred stamp worker and retry lifecycle.
-3. Expand pinned Rust/Python interoperability gates with each completed row.
-4. Close RNS channel, discovery, resolver, and transport-policy gaps.
-5. Collect hardware, soak, and external-client release evidence.
-6. Expand interface and utility breadth after protocol behavior stabilizes.
+1. Expand pinned Rust/Python interoperability gates with each completed row.
+2. Close RNS discovery, resolver, and transport-policy gaps.
+3. Collect hardware, soak, and external-client release evidence.
+4. Expand interface and utility breadth after protocol behavior stabilizes.
 
 ## Verification Baseline
 

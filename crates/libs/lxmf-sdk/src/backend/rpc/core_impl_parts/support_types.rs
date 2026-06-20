@@ -96,7 +96,53 @@ mod tests {
         assert_eq!(params["stamp_cost"], json!(8));
         assert_eq!(params["include_ticket"], json!(true));
         assert_eq!(params["try_propagation_on_fail"], json!(true));
-        assert_eq!(params["fields"]["_sdk"]["correlation_id"], json!("corr-rpc"));
+        assert!(params["fields"].is_null());
+    }
+
+    #[test]
+    fn send_params_uses_only_explicit_lxmf_fields_for_wire_payload() {
+        let backend = RpcBackendClient::new("127.0.0.1:65530");
+        let params = backend.send_params(
+            SendRequest::new(
+                "source-destination",
+                "target-destination",
+                json!({
+                    "title": "ops",
+                    "content": "hello",
+                    "fields": {
+                        "9": [{ "command_type": "status.request" }],
+                        "12": [170, 187],
+                    },
+                }),
+            )
+            .with_correlation_id("corr-rpc"),
+        );
+
+        assert_eq!(params["title"], json!("ops"));
+        assert_eq!(params["content"], json!("hello"));
+        assert_eq!(params["fields"]["9"][0]["command_type"], json!("status.request"));
+        assert_eq!(params["fields"]["12"], json!([170, 187]));
+        assert_eq!(params["fields"].get("title"), None);
+        assert_eq!(params["fields"].get("content"), None);
+        assert_eq!(params["fields"].get("_sdk"), None);
+    }
+
+    #[test]
+    fn send_params_message_ids_do_not_collide_across_fresh_clients() {
+        let first_backend = RpcBackendClient::new("127.0.0.1:65530");
+        let second_backend = RpcBackendClient::new("127.0.0.1:65530");
+        let first = first_backend.send_params(SendRequest::new(
+            "source-destination",
+            "first-target",
+            json!({ "title": "ops", "content": "first" }),
+        ));
+        let second = second_backend.send_params(SendRequest::new(
+            "source-destination",
+            "second-target",
+            json!({ "title": "ops", "content": "second" }),
+        ));
+
+        assert_ne!(first["id"], second["id"]);
     }
 
     #[test]

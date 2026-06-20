@@ -5,14 +5,16 @@ use crate::domain::{
     AttachmentListResult, AttachmentMeta, AttachmentStoreRequest, AttachmentUploadChunkAck,
     AttachmentUploadChunkRequest, AttachmentUploadCommitRequest, AttachmentUploadSession,
     AttachmentUploadStartRequest, ContactListRequest, ContactListResult, ContactRecord,
-    ContactUpdateRequest, IdentityBootstrapRequest, IdentityBundle, IdentityImportRequest,
-    IdentityRef, IdentityResolveRequest, MarkerCreateRequest, MarkerDeleteRequest,
-    MarkerListRequest, MarkerListResult, MarkerRecord, MarkerUpdatePositionRequest,
-    PaperMessageEnvelope, PresenceListRequest, PresenceListResult, RemoteCommandRequest,
-    RemoteCommandResponse, RemoteCommandSession, RemoteCommandSessionListRequest,
-    RemoteCommandSessionListResult, TelemetryPoint, TelemetryQuery, TopicCreateRequest, TopicId,
-    TopicListRequest, TopicListResult, TopicPublishRequest, TopicRecord, TopicSubscriptionRequest,
-    VoiceSessionId, VoiceSessionOpenRequest, VoiceSessionState, VoiceSessionUpdateRequest,
+    ContactUpdateRequest, IdentityAnnounceRequest, IdentityAnnounceResult,
+    IdentityBootstrapRequest, IdentityBundle, IdentityImportRequest, IdentityRef,
+    IdentityResolveRequest, MarkerCreateRequest, MarkerDeleteRequest, MarkerListRequest,
+    MarkerListResult, MarkerRecord, MarkerUpdatePositionRequest, PaperMessageEnvelope,
+    PeerConnectionRequest, PeerConnectionResult, PresenceListRequest, PresenceListResult,
+    RemoteCommandRequest, RemoteCommandResponse, RemoteCommandSession,
+    RemoteCommandSessionListRequest, RemoteCommandSessionListResult, TelemetryPoint,
+    TelemetryQuery, TopicCreateRequest, TopicId, TopicListRequest, TopicListResult,
+    TopicPublishRequest, TopicRecord, TopicSubscriptionRequest, VoiceSessionId,
+    VoiceSessionOpenRequest, VoiceSessionState, VoiceSessionUpdateRequest,
 };
 use crate::error::{code, ErrorCategory, SdkError};
 use crate::event::{EventBatch, EventCursor};
@@ -23,6 +25,7 @@ use crate::types::{
     ShutdownMode, TickBudget, TickResult,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 #[cfg(feature = "sdk-async")]
 use std::future::Future;
 #[cfg(feature = "sdk-async")]
@@ -31,6 +34,39 @@ use std::pin::Pin;
 use tokio_stream::Stream;
 
 const CAP_KEY_MANAGEMENT: &str = "sdk.capability.key_management";
+const LXMF_RAW_FIELDS_KEY: &str = "_lxmf_fields_msgpack_b64";
+
+fn lxmf_wire_fields_from_payload(payload: JsonValue) -> JsonValue {
+    let JsonValue::Object(mut map) = payload else {
+        return JsonValue::Null;
+    };
+
+    if let Some(JsonValue::Object(fields)) = map.remove("fields") {
+        return non_empty_fields(fields);
+    }
+
+    let fields = map
+        .into_iter()
+        .filter(|(key, _)| !is_reserved_payload_field_key(key))
+        .collect::<JsonMap<String, JsonValue>>();
+    non_empty_fields(fields)
+}
+
+fn is_reserved_payload_field_key(key: &str) -> bool {
+    key != LXMF_RAW_FIELDS_KEY
+        && matches!(
+            key,
+            "title" | "content" | "body" | "payload" | "_lxmf" | "_sdk" | "_fields_raw"
+        )
+}
+
+fn non_empty_fields(fields: JsonMap<String, JsonValue>) -> JsonValue {
+    if fields.is_empty() {
+        JsonValue::Null
+    } else {
+        JsonValue::Object(fields)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -204,6 +240,13 @@ pub trait SdkBackend: Send + Sync {
         Err(SdkError::capability_disabled("sdk.capability.identity_discovery"))
     }
 
+    fn identity_announce(
+        &self,
+        _req: IdentityAnnounceRequest,
+    ) -> Result<IdentityAnnounceResult, SdkError> {
+        Err(SdkError::capability_disabled("sdk.capability.identity_discovery"))
+    }
+
     fn identity_presence_list(
         &self,
         _req: PresenceListRequest,
@@ -249,6 +292,24 @@ pub trait SdkBackend: Send + Sync {
         _req: IdentityBootstrapRequest,
     ) -> Result<ContactRecord, SdkError> {
         Err(SdkError::capability_disabled("sdk.capability.contact_management"))
+    }
+
+    fn peer_connect(&self, _req: PeerConnectionRequest) -> Result<PeerConnectionResult, SdkError> {
+        Err(SdkError::capability_disabled("sdk.capability.peer_lifecycle"))
+    }
+
+    fn peer_disconnect(
+        &self,
+        _req: PeerConnectionRequest,
+    ) -> Result<PeerConnectionResult, SdkError> {
+        Err(SdkError::capability_disabled("sdk.capability.peer_lifecycle"))
+    }
+
+    fn peer_reconnect(
+        &self,
+        _req: PeerConnectionRequest,
+    ) -> Result<PeerConnectionResult, SdkError> {
+        Err(SdkError::capability_disabled("sdk.capability.peer_lifecycle"))
     }
 
     fn paper_encode(&self, _message_id: MessageId) -> Result<PaperMessageEnvelope, SdkError> {

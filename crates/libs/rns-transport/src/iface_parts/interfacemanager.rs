@@ -291,9 +291,10 @@ impl InterfaceManager {
     }
 
     async fn send_to_iface(iface: &LocalInterface, message: TxMessage) -> bool {
+        let tx_type = message.tx_type;
         match iface.tx_send.try_send(message) {
             Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(_)) => {
+            Err(mpsc::error::TrySendError::Full(message)) => {
                 match tokio::time::timeout(
                     Duration::from_millis(IFACE_TX_ENQUEUE_TIMEOUT_MS),
                     iface.tx_send.send(message),
@@ -305,7 +306,7 @@ impl InterfaceManager {
                             log::warn!(
                                 "recovered from full tx queue on {} for {:?}",
                                 iface.address,
-                                message.tx_type
+                                tx_type
                             );
                         }
                         true
@@ -314,7 +315,7 @@ impl InterfaceManager {
                         log::warn!(
                             "tx queue closed on {} for {:?}",
                             iface.address,
-                            message.tx_type
+                            tx_type
                         );
                         false
                     }
@@ -322,14 +323,14 @@ impl InterfaceManager {
                         log::warn!(
                             "tx queue full timeout on {} for {:?}",
                             iface.address,
-                            message.tx_type
+                            tx_type
                         );
                         false
                     }
                 }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                log::warn!("tx queue closed on {} for {:?}", iface.address, message.tx_type);
+                log::warn!("tx queue closed on {} for {:?}", iface.address, tx_type);
                 false
             }
         }
@@ -460,7 +461,7 @@ impl InterfaceManager {
                 if is_paced_announce
                     && (!iface.announce_queue.is_empty() || now < iface.announce_allowed_at)
                 {
-                    if Self::queue_announce(iface, message, now) {
+                    if Self::queue_announce(iface, message.clone(), now) {
                         trace.queued_ifaces += 1;
                     } else {
                         trace.failed_ifaces += 1;
@@ -477,7 +478,7 @@ impl InterfaceManager {
                         );
                 }
 
-                if Self::send_to_iface(iface, message).await {
+                if Self::send_to_iface(iface, message.clone()).await {
                     trace.sent_ifaces += 1;
                 } else {
                     trace.failed_ifaces += 1;

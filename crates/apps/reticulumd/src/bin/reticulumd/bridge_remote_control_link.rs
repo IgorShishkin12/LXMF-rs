@@ -253,6 +253,15 @@ pub(super) async fn wait_for_link_request_response_with_terminal_policy(
                                     ));
                                 }
                             }
+                            rns_transport::resource::ResourceEventKind::InboundFailed(failure) => {
+                                if fail_on_terminal_resource_events {
+                                    let msg = format!(
+                                        "propagation control inbound resource transfer failed: {}",
+                                        failure.reason
+                                    );
+                                    return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, msg));
+                                }
+                            }
                             rns_transport::resource::ResourceEventKind::OutboundComplete
                             | rns_transport::resource::ResourceEventKind::Progress(_) => {}
                         }
@@ -276,7 +285,10 @@ fn link_close_signal_error(
     if event.context != Some(PacketContext::LinkClose) {
         return None;
     }
-    let value = rmp_serde::from_slice::<rmpv::Value>(event.data.as_slice()).ok()?;
+    let value = rmp_serde::from_slice::<rmpv::Value>(event.data.as_slice()).inspect_err(|err| {
+        log::warn!("[daemon-control] failed to decode link close signal: {err}")
+    });
+    let value = value.ok()?;
     let rmpv::Value::Array(entries) = value else {
         return Some(std::io::Error::new(
             std::io::ErrorKind::ConnectionAborted,
@@ -299,7 +311,10 @@ fn link_close_signal_error(
 }
 
 fn parse_link_response_frame(bytes: &[u8]) -> Option<([u8; 16], rmpv::Value)> {
-    let value = rmp_serde::from_slice::<rmpv::Value>(bytes).ok()?;
+    let value = rmp_serde::from_slice::<rmpv::Value>(bytes).inspect_err(|err| {
+        log::warn!("[daemon-control] failed to decode link response frame: {err}")
+    });
+    let value = value.ok()?;
     let rmpv::Value::Array(entries) = value else {
         return None;
     };
@@ -330,144 +345,5 @@ fn value_to_bytes(value: &rmpv::Value) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use rns_transport::hash::Hash;
-    use rns_transport::packet::PacketDataBuffer;
-    use rns_transport::resource::{ResourceEvent, ResourceEventKind};
-    use rns_transport::transport::{ReceivedData, ReceivedPayloadMode};
-
-    async fn resource_terminal_error(kind: ResourceEventKind) -> std::io::Error {
-        let (_data_tx, mut data_rx) = tokio::sync::broadcast::channel(4);
-        let (resource_tx, mut resource_rx) = tokio::sync::broadcast::channel(4);
-        let destination = AddressHash::new([0x11; 16]);
-        let link_id = AddressHash::new([0x22; 16]);
-        let request_id = [0x33; 16];
-
-        resource_tx
-            .send(ResourceEvent {
-                hash: Hash::new_from_slice(b"terminal propagation control resource"),
-                link_id,
-                kind,
-            })
-            .expect("send terminal resource event");
-
-        wait_for_link_request_response_with_terminal_policy(
-            &mut data_rx,
-            &mut resource_rx,
-            destination,
-            link_id,
-            request_id,
-            true,
-            Duration::from_millis(50),
-        )
-        .await
-        .expect_err("terminal resource event should fail immediately")
-    }
-
-    #[tokio::test]
-    async fn wait_for_link_request_response_fails_on_resource_failure() {
-        let err = resource_terminal_error(ResourceEventKind::OutboundFailed).await;
-
-        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
-        assert_eq!(err.to_string(), "propagation control resource transfer failed");
-    }
-
-    #[tokio::test]
-    async fn wait_for_link_request_response_fails_on_resource_cancel() {
-        let err = resource_terminal_error(ResourceEventKind::OutboundCancelled).await;
-
-        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
-        assert_eq!(err.to_string(), "propagation control resource transfer cancelled");
-    }
-
-    #[tokio::test]
-    async fn wait_for_link_request_response_ignores_terminal_resource_without_policy() {
-        let (data_tx, mut data_rx) = tokio::sync::broadcast::channel(4);
-        let (resource_tx, mut resource_rx) = tokio::sync::broadcast::channel(4);
-        let destination = AddressHash::new([0x11; 16]);
-        let link_id = AddressHash::new([0x22; 16]);
-        let stale_request_id = [0x33; 16];
-        let request_id = [0x44; 16];
-        let response_payload = rmpv::Value::Array(vec![
-            rmpv::Value::Binary(request_id.to_vec()),
-            rmpv::Value::String("ok".into()),
-        ]);
-        let response_frame = rmp_serde::to_vec(&response_payload).expect("encode response frame");
-
-        resource_tx
-            .send(ResourceEvent {
-                hash: Hash::new_from_slice(b"stale propagation control resource"),
-                link_id,
-                kind: ResourceEventKind::OutboundFailed,
-            })
-            .expect("send stale terminal resource event");
-        assert!(data_tx
-            .send(ReceivedData {
-                destination: link_id,
-                data: PacketDataBuffer::new_from_slice(&response_frame),
-                payload_mode: ReceivedPayloadMode::FullWire,
-                ratchet_used: false,
-                context: Some(PacketContext::None),
-                request_id: None,
-                hops: None,
-                interface: None,
-            })
-            .is_ok());
-
-        let response = wait_for_link_request_response_with_terminal_policy(
-            &mut data_rx,
-            &mut resource_rx,
-            destination,
-            link_id,
-            request_id,
-            false,
-            Duration::from_millis(50),
-        )
-        .await
-        .expect("stale terminal event should not fail the current request");
-
-        assert_eq!(response.as_str(), Some("ok"));
-        assert_ne!(stale_request_id, request_id);
-    }
-
-    #[tokio::test]
-    async fn wait_for_link_request_response_fails_on_link_close_signal() {
-        let (data_tx, mut data_rx) = tokio::sync::broadcast::channel(4);
-        let (_resource_tx, mut resource_rx) = tokio::sync::broadcast::channel::<ResourceEvent>(4);
-        let expected_destination = AddressHash::new_from_slice(&[0x11; 16]);
-        let expected_link_id = AddressHash::new_from_slice(&[0x22; 16]);
-        let request_id = [0x33; 16];
-        let signal_payload = rmp_serde::to_vec(&vec![0xf1u8]).expect("signal msgpack");
-
-        assert!(
-            data_tx
-                .send(ReceivedData {
-                    destination: expected_link_id,
-                    data: PacketDataBuffer::new_from_slice(&signal_payload),
-                    payload_mode: ReceivedPayloadMode::FullWire,
-                    ratchet_used: false,
-                    context: Some(PacketContext::LinkClose),
-                    request_id: None,
-                    hops: None,
-                    interface: None,
-                })
-                .is_ok(),
-            "send link-close signal"
-        );
-
-        let err = wait_for_link_request_response(
-            &mut data_rx,
-            &mut resource_rx,
-            expected_destination,
-            expected_link_id,
-            request_id,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect_err("link-close signal should fail the active request");
-
-        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
-        assert!(err.to_string().contains("propagation node denied access"));
-    }
-}
+#[path = "bridge_remote_control_link_tests.rs"]
+mod tests;

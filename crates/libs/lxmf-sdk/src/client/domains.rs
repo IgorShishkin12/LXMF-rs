@@ -160,6 +160,13 @@ impl<B: SdkBackend> LxmfSdkIdentity for Client<B> {
         self.backend.identity_announce_now()
     }
 
+    fn identity_announce(
+        &self,
+        req: crate::domain::IdentityAnnounceRequest,
+    ) -> Result<crate::domain::IdentityAnnounceResult, SdkError> {
+        self.backend.identity_announce(req)
+    }
+
     fn identity_presence_list(
         &self,
         req: crate::domain::PresenceListRequest,
@@ -211,6 +218,29 @@ impl<B: SdkBackend> LxmfSdkIdentity for Client<B> {
         req: crate::domain::IdentityBootstrapRequest,
     ) -> Result<crate::domain::ContactRecord, SdkError> {
         self.backend.identity_bootstrap(req)
+    }
+}
+
+impl<B: SdkBackend> LxmfSdkPeerLifecycle for Client<B> {
+    fn peer_connect(
+        &self,
+        req: crate::domain::PeerConnectionRequest,
+    ) -> Result<crate::domain::PeerConnectionResult, SdkError> {
+        self.backend.peer_connect(req)
+    }
+
+    fn peer_disconnect(
+        &self,
+        req: crate::domain::PeerConnectionRequest,
+    ) -> Result<crate::domain::PeerConnectionResult, SdkError> {
+        self.backend.peer_disconnect(req)
+    }
+
+    fn peer_reconnect(
+        &self,
+        req: crate::domain::PeerConnectionRequest,
+    ) -> Result<crate::domain::PeerConnectionResult, SdkError> {
+        self.backend.peer_reconnect(req)
     }
 }
 

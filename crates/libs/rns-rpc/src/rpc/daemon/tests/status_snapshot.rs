@@ -30,6 +30,8 @@ include!("status_snapshot_parts/peer_sync_postpones_stamped_offers_u.rs");
 
 include!("status_snapshot_parts/peer_sync_updates_restored_peer_reco.rs");
 
+include!("status_snapshot_parts/peer_restart_replay_parity.rs");
+
 include!("status_snapshot_parts/repeated_skipped_peer_sync_retries_w.rs");
 
 include!("status_snapshot_parts/peer_sync_preserves_duplicate_wanted.rs");
@@ -43,6 +45,8 @@ include!("status_snapshot_parts/peer_sync_no_access_offer_response_b.rs");
 include!("status_snapshot_parts/peer_sync_retryable_offer_response_r.rs");
 
 include!("status_snapshot_parts/peer_sync_persists_counters_after_pr.rs");
+
+include!("status_snapshot_parts/peer_source_accounting_parity.rs");
 
 include!("status_snapshot_parts/persistent_peer_sync_continues_after.rs");
 
@@ -66,6 +70,8 @@ include!("status_snapshot_parts/propagation_remote_status_trims_remo.rs");
 
 include!("status_snapshot_parts/remotecontrolbridge.rs");
 
+include!("status_snapshot_parts/propagation_node_meta_exposes_config.rs");
+
 include!("status_snapshot_parts/selected_propagation_node_matches_ex.rs");
 
 include!("status_snapshot_parts/propagation_remote_sync_respects_pee.rs");
@@ -79,6 +85,8 @@ include!("status_snapshot_parts/propagation_remote_sync_ignores_payl.rs");
 include!("status_snapshot_parts/propagation_remote_imports_match_sou.rs");
 
 include!("status_snapshot_parts/propagation_remote_fetch_updates_lif.rs");
+
+include!("status_snapshot_parts/propagation_remote_fetch_postponed_result.rs");
 
 include!("status_snapshot_parts/propagation_remote_download_success_clears_backoff.rs");
 

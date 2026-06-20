@@ -167,6 +167,12 @@ struct TicketGenerateParams {
 #[derive(Debug, Deserialize, Default)]
 struct ListMessagesParams {
     #[serde(default)]
+    peer_id: Option<String>,
+    #[serde(default)]
+    conversation_id: Option<String>,
+    #[serde(default)]
+    include_receipts: Option<bool>,
+    #[serde(default)]
     limit: Option<usize>,
     #[serde(default)]
     before_ts: Option<i64>,
@@ -186,7 +192,7 @@ struct ListAnnouncesParams {
 
 #[derive(Debug, Deserialize)]
 struct SetOutboundPropagationNodeParams {
-    #[serde(default)]
+    #[serde(default, alias = "destination_hash", alias = "destination", alias = "hash")]
     peer: Option<String>,
 }
 

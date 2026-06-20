@@ -139,6 +139,13 @@ pub(super) fn remote_peer_value(peer: &str) -> Result<rmpv::Value, std::io::Erro
     Ok(rmpv::Value::Binary(peer_hash.to_vec()))
 }
 
+fn remote_peer_sync_request_value(
+    peer: &str,
+    _transfer_limit_kb: Option<f64>,
+) -> Result<rmpv::Value, std::io::Error> {
+    remote_peer_value(peer)
+}
+
 impl RemoteControlBridge for TransportBridge {
     fn propagation_remote_status(
         &self,
@@ -163,16 +170,12 @@ impl RemoteControlBridge for TransportBridge {
         timeout_secs: f64,
         transfer_limit_kb: Option<f64>,
     ) -> Result<JsonValue, std::io::Error> {
-        let peer_value = remote_peer_value(peer)?;
-        let request = transfer_limit_kb
-            .map(|limit| rmpv::Value::Array(vec![peer_value.clone(), rmpv::Value::F64(limit)]))
-            .unwrap_or(peer_value);
         self.run_remote_control(
             remote,
             identity_private_key_hex,
             timeout_secs,
             "/pn/peer/sync",
-            request,
+            remote_peer_sync_request_value(peer, transfer_limit_kb)?,
         )
     }
 
@@ -192,7 +195,7 @@ impl RemoteControlBridge for TransportBridge {
         )?;
         let transient_ids = rmpv_binary_array(&available)?;
         if transient_ids.is_empty() {
-            return Ok(propagation_remote_fetch_summary(0, &[], 0, 0, 0));
+            return Ok(propagation_remote_fetch_summary(0, &[], &[], 0, 0, 0));
         }
 
         let fetched = self.run_remote_control_raw(
@@ -211,12 +214,14 @@ impl RemoteControlBridge for TransportBridge {
             ]),
         )?;
         let payloads = rmpv_binary_array(&fetched)?;
-        let daemon = self
-            .daemon
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
-            .ok_or_else(|| std::io::Error::other("daemon unavailable"))?;
+        let daemon = match self.daemon.lock() {
+            Ok(guard) => guard.clone(),
+            Err(err) => {
+                log::warn!("[daemon-control] failed to read daemon for remote fetch: {err}");
+                None
+            }
+        }
+        .ok_or_else(|| std::io::Error::other("daemon unavailable"))?;
 
         let mut imported_count = 0usize;
         let mut duplicate_count = 0usize;
@@ -256,6 +261,7 @@ impl RemoteControlBridge for TransportBridge {
         Ok(propagation_remote_fetch_summary(
             transient_ids.len(),
             &payloads,
+            &transient_ids,
             imported_count,
             duplicate_count,
             rejected_count,
@@ -292,12 +298,14 @@ impl RemoteControlBridge for TransportBridge {
         let timeout = Duration::from_secs_f64(timeout_secs.max(0.1));
         let transport = self.transport.clone();
         let identity_cache = self.outbound_propagation_identities.clone();
-        let daemon = self
-            .daemon
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
-            .ok_or_else(|| std::io::Error::other("rpc daemon unavailable"))?;
+        let daemon = match self.daemon.lock() {
+            Ok(guard) => guard.clone(),
+            Err(err) => {
+                log::warn!("[daemon-control] failed to read daemon for remote download: {err}");
+                None
+            }
+        }
+        .ok_or_else(|| std::io::Error::other("rpc daemon unavailable"))?;
         let delivery_destination = self.announce_destination.clone();
 
         std::thread::spawn(move || {
@@ -352,17 +360,33 @@ impl RemoteControlBridge for TransportBridge {
 fn propagation_remote_fetch_summary(
     available_count: usize,
     payloads: &[Vec<u8>],
+    transient_ids: &[Vec<u8>],
     imported_count: usize,
     duplicate_count: usize,
     rejected_count: usize,
 ) -> JsonValue {
     let transferred_bytes = payloads.iter().map(Vec::len).sum::<usize>();
+    let messages = payloads
+        .iter()
+        .enumerate()
+        .map(|(index, payload)| {
+            let transient_id = transient_ids
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| propagation_payload_ack_transient_id(payload));
+            json!({
+                "transient_id": hex::encode(transient_id),
+                "payload_hex": hex::encode(payload),
+            })
+        })
+        .collect::<Vec<_>>();
     json!({
         "available_count": available_count,
         "fetched_count": payloads.len(),
         "imported_count": imported_count,
         "duplicate_count": duplicate_count,
         "rejected_count": rejected_count,
+        "messages": messages,
         "transferred_bytes": transferred_bytes,
     })
 }

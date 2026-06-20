@@ -5,8 +5,9 @@ use sha2::{Digest, Sha256};
 #[test]
 fn propagation_remote_fetch_summary_reports_transferred_bytes() {
     let payloads = vec![b"first".to_vec(), b"second-payload".to_vec()];
+    let transient_ids = vec![vec![0x11; 32], vec![0x22; 32]];
 
-    let summary = propagation_remote_fetch_summary(7, &payloads, 1, 2, 3);
+    let summary = propagation_remote_fetch_summary(7, &payloads, &transient_ids, 1, 2, 3);
 
     assert_eq!(summary["available_count"].as_u64(), Some(7));
     assert_eq!(summary["fetched_count"].as_u64(), Some(2));
@@ -17,6 +18,31 @@ fn propagation_remote_fetch_summary_reports_transferred_bytes() {
         summary["transferred_bytes"].as_u64(),
         Some(payloads.iter().map(Vec::len).sum::<usize>() as u64)
     );
+    let messages = summary["messages"].as_array().expect("messages");
+    assert_eq!(messages.len(), 2);
+    let expected_payload_hex = hex::encode(&payloads[0]);
+    let expected_transient_id = hex::encode(&transient_ids[0]);
+    assert_eq!(messages[0]["payload_hex"].as_str(), Some(expected_payload_hex.as_str()));
+    assert_eq!(messages[0]["transient_id"].as_str(), Some(expected_transient_id.as_str()));
+}
+
+#[test]
+fn propagation_remote_fetch_summary_preserves_advertised_transient_id() {
+    let payloads = vec![vec![0x42; 272]];
+    let advertised_id = vec![0x19; 32];
+
+    let summary = propagation_remote_fetch_summary(
+        1,
+        &payloads,
+        std::slice::from_ref(&advertised_id),
+        1,
+        0,
+        0,
+    );
+    let messages = summary["messages"].as_array().expect("messages");
+
+    assert_eq!(messages[0]["transient_id"].as_str(), Some(hex::encode(advertised_id).as_str()));
+    assert_eq!(messages[0]["payload_hex"].as_str(), Some(hex::encode(&payloads[0]).as_str()));
 }
 
 #[test]
@@ -33,6 +59,15 @@ fn propagation_control_response_code_maps_peer_errors_like_python() {
         assert_eq!(err.kind(), kind);
         assert_eq!(err.to_string(), message);
     }
+}
+
+#[test]
+fn propagation_remote_sync_request_keeps_python_binary_peer_shape_with_transfer_limit() {
+    let peer = "00112233445566778899aabbccddeeff";
+    let request =
+        remote_peer_sync_request_value(peer, Some(42.5)).expect("peer sync request value");
+
+    assert_eq!(request, rmpv::Value::Binary(hex::decode(peer).expect("peer hex")));
 }
 
 #[test]

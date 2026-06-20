@@ -161,21 +161,17 @@ impl Transport {
         };
         let packet = decision.packet;
         let maybe_iface = decision.next_iface;
+        let destination = packet.destination;
 
         if let Some(iface) = maybe_iface {
             self.send_direct(iface, packet).await;
             log::trace!("Sent outbound packet to {}", iface);
-        }
-        if maybe_iface.is_none() {
+        } else {
             let handler = self.handler.lock().await;
             if handler.config.broadcast {
                 handler.send(TxMessage { tx_type: TxMessageType::Broadcast(None), packet }).await;
             } else {
-                log::trace!(
-                    "tp({}): no route for outbound packet dst={}",
-                    self.name,
-                    packet.destination
-                );
+                log::trace!("tp({}): no route for outbound packet dst={}", self.name, destination);
             }
         }
     }
@@ -301,8 +297,13 @@ impl Transport {
     }
 
     pub fn emit_receipt_for_test(&self, receipt: DeliveryReceipt) {
-        let receipt_handler =
-            self.handler.try_lock().ok().and_then(|handler| handler.receipt_handler.clone());
+        let receipt_handler = match self.handler.try_lock() {
+            Ok(handler) => handler.receipt_handler.clone(),
+            Err(err) => {
+                log::warn!("[transport] failed to read receipt handler for test receipt: {err}");
+                None
+            }
+        };
 
         if let Some(handler) = receipt_handler {
             handler.on_receipt(&receipt);

@@ -315,6 +315,7 @@ fn canonical_peer_sync_wanted_ids(
         )
     })?;
     let mut canonical = Vec::with_capacity(wanted_ids.len());
+    let mut seen_canonical = std::collections::HashSet::with_capacity(wanted_ids.len());
     for wanted_id in wanted_ids {
         let wanted_id = wanted_id.as_str().ok_or_else(|| {
             std::io::Error::new(
@@ -329,7 +330,10 @@ fn canonical_peer_sync_wanted_ids(
                 "wanted_ids must contain 32-byte transient ids",
             ));
         }
-        canonical.push(wanted_id.to_ascii_lowercase());
+        let wanted_id = wanted_id.to_ascii_lowercase();
+        if seen_canonical.insert(wanted_id.clone()) {
+            canonical.push(wanted_id);
+        }
     }
     Ok((Some(PeerSyncWantedIds::Selected(canonical)), None))
 }
@@ -369,12 +373,62 @@ fn validate_peer_sync_wanted_ids_in_offer(
     Ok(())
 }
 
+fn validate_peer_sync_full_offer_payloads(
+    pending_propagation: &[PropagationEntryRecord],
+    transfer_limit_bytes: Option<usize>,
+    sync_limit_bytes: Option<usize>,
+    start_size: usize,
+) -> Result<(), std::io::Error> {
+    let mut cumulative_size = start_size;
+    for entry in pending_propagation {
+        let entry_size = usize::try_from(entry.size_bytes).unwrap_or(usize::MAX);
+        let transfer_size = entry_size.saturating_add(16);
+        if transfer_limit_bytes.is_some_and(|limit| transfer_size > limit) {
+            continue;
+        }
+        let next_size = cumulative_size.saturating_add(transfer_size);
+        if sync_limit_bytes.is_some_and(|limit| next_size >= limit) {
+            continue;
+        }
+        cumulative_size = next_size;
+        hex::decode(entry.payload_hex.as_str()).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid propagation payload hex: {err}"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
 fn peer_sync_resource_data_size(payloads: &[Vec<u8>]) -> Result<u64, std::io::Error> {
     if payloads.is_empty() {
         return Ok(0);
     }
     let packed = rmp_serde::to_vec(&(1.0_f64, payloads)).map_err(std::io::Error::other)?;
     Ok(packed.len() as u64)
+}
+
+fn decode_peer_sync_transfer(
+    entry: &PropagationEntryRecord,
+) -> Result<(JsonValue, Vec<u8>), std::io::Error> {
+    let payload_bytes = hex::decode(entry.payload_hex.as_str()).map_err(|err| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid propagation payload hex: {err}"),
+        )
+    })?;
+    Ok((
+        json!({
+            "transient_id": entry.transient_id,
+            "destination": entry.destination,
+            "payload_hex": entry.payload_hex,
+            "received_at": entry.received_at,
+            "size_bytes": entry.size_bytes,
+            "stamp_value": entry.stamp_value,
+        }),
+        payload_bytes,
+    ))
 }
 
 fn propagation_peer_sync_weight(
@@ -411,12 +465,19 @@ fn generate_peering_key_value(material: &[u8], target_cost: u32) -> Option<u32> 
     for n in 0..PEERING_WORKBLOCK_EXPAND_ROUNDS {
         let mut salt_data = Vec::with_capacity(material.len() + 8);
         salt_data.extend_from_slice(material);
-        let packed = rmp_serde::to_vec(&n).ok()?;
+        let packed = match rmp_serde::to_vec(&n) {
+            Ok(packed) => packed,
+            Err(err) => {
+                log::warn!("[rpc] failed to encode propagation peering key nonce: {err}");
+                return None;
+            }
+        };
         salt_data.extend_from_slice(&packed);
         let salt_hash = Sha256::digest(&salt_data);
         let hk = Hkdf::<Sha256>::new(Some(salt_hash.as_slice()), material);
         let mut okm = [0u8; 256];
-        hk.expand(&[], &mut okm).ok()?;
+        hk.expand(&[], &mut okm)
+            .expect("HKDF expand propagation peering key workblock");
         workblock.extend_from_slice(&okm);
     }
 

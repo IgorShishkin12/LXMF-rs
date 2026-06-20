@@ -24,7 +24,7 @@ struct CompatibilityCase {
     description: &'static str,
 }
 
-const COMPATIBILITY_CASES: [CompatibilityCase; 16] = [
+const COMPATIBILITY_CASES: [CompatibilityCase; 20] = [
     CompatibilityCase {
         id: "direct_rust_to_python",
         mode: CompatibilityMode::Direct,
@@ -61,6 +61,21 @@ const COMPATIBILITY_CASES: [CompatibilityCase; 16] = [
         description: "Python can resolve Rust propagation control and Rust can query Python propagation status",
     },
     CompatibilityCase {
+        id: "propagation_remote_fetch_rust_to_python",
+        mode: CompatibilityMode::PropagationControl,
+        description: "Rust remote fetch can import Python propagation-node payloads",
+    },
+    CompatibilityCase {
+        id: "propagation_remote_download_rust_to_python",
+        mode: CompatibilityMode::PropagationControl,
+        description: "Rust remote download can import Python propagation-node payloads",
+    },
+    CompatibilityCase {
+        id: "propagation_remote_sync_rust_to_python",
+        mode: CompatibilityMode::PropagationControl,
+        description: "Rust remote sync can trigger a seeded Python LXMRouter peer sync transfer",
+    },
+    CompatibilityCase {
         id: "propagation_get_haves_python_to_rust",
         mode: CompatibilityMode::PropagationControl,
         description: "Python-origin propagation get haves exercise Rust purge and retry suppression",
@@ -74,6 +89,11 @@ const COMPATIBILITY_CASES: [CompatibilityCase; 16] = [
         id: "propagation_offer_queue_python_to_rust",
         mode: CompatibilityMode::PropagationControl,
         description: "Python-origin propagation offers exercise Rust peer queue lifecycle state",
+    },
+    CompatibilityCase {
+        id: "propagation_offer_duplicate_wanted_source_completed_python_to_rust",
+        mode: CompatibilityMode::PropagationControl,
+        description: "Python-origin propagation offers exercise Rust duplicate wanted-ID and source-completed state",
     },
     CompatibilityCase {
         id: "link_liveness_rust_to_python",
@@ -109,7 +129,7 @@ const COMPATIBILITY_CASES: [CompatibilityCase; 16] = [
 
 pub(crate) fn assert_required_modes_covered() {
     assert!(
-        COMPATIBILITY_CASES.len() >= 16,
+        COMPATIBILITY_CASES.len() >= 20,
         "matrix should cover the documented required scenarios"
     );
     assert_case_present("direct_rust_to_python");
@@ -119,9 +139,13 @@ pub(crate) fn assert_required_modes_covered() {
     assert_case_present("propagated_rust_to_python");
     assert_case_present("propagated_python_to_rust");
     assert_case_present("propagation_remote_status_bidir");
+    assert_case_present("propagation_remote_fetch_rust_to_python");
+    assert_case_present("propagation_remote_download_rust_to_python");
+    assert_case_present("propagation_remote_sync_rust_to_python");
     assert_case_present("propagation_get_haves_python_to_rust");
     assert_case_present("propagation_offer_python_to_rust");
     assert_case_present("propagation_offer_queue_python_to_rust");
+    assert_case_present("propagation_offer_duplicate_wanted_source_completed_python_to_rust");
     assert_case_present("link_liveness_rust_to_python");
     assert_case_present("link_liveness_python_to_rust");
     assert_case_present("link_teardown_rust_to_python");

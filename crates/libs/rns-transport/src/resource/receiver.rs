@@ -117,7 +117,7 @@ impl ResourceReceiver {
         }
     }
 
-    fn build_request(&mut self, now: Instant, rtt: Duration) -> ResourceRequest {
+    fn build_request(&mut self, now: Instant, rtt: Duration, window: usize) -> ResourceRequest {
         // TODO: the loss threshold (2×rtt) and EWMA alpha (7/8) are intuition-based
         // and have not been formally tuned or proven. On links with high jitter the
         // 2×rtt multiplier may be too tight (causing spurious re-requests); on links
@@ -160,7 +160,7 @@ impl ResourceReceiver {
 
         // Fill available window slots. Lost fragments are at the front of request_queue
         // (pushed there above) so they get priority over new fragments.
-        let window_space = WINDOW.saturating_sub(self.in_flight_set.len());
+        let window_space = window.max(WINDOW).saturating_sub(self.in_flight_set.len());
         let mut requested = Vec::new();
         while requested.len() < window_space {
             match self.request_queue.pop_front() {
@@ -355,6 +355,18 @@ impl ResourceReceiver {
     /// occurred.
     fn mark_active_request(&mut self) {
         self.last_request = Instant::now();
+    }
+
+    /// Reset the retry budget after observing real progress (a new part arrived).
+    ///
+    /// `retry_count` is otherwise monotonic and only checked against `retry_limit`,
+    /// so without this it acts as a *global* cap on a transfer's lifetime: a slow
+    /// but steadily-progressing transfer over a lossy link accumulates retries
+    /// across separate stall episodes and is eventually failed even though it
+    /// never actually went idle for `retry_limit` consecutive intervals. Resetting
+    /// on progress makes `retry_limit` a true consecutive-inactivity bound.
+    fn note_progress(&mut self) {
+        self.retry_count = 0;
     }
 
     fn retry_due(&self, now: Instant, retry_interval: Duration, max_retries: u8) -> bool {

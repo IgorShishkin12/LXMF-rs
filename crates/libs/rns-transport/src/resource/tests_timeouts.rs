@@ -76,8 +76,10 @@ fn resource_receiver_not_killed_by_timer_during_active_transfer() {
     // After the advertisement, retry_count should be 1.
     assert_eq!(manager.incoming[&resource_hash].retry_count, 1);
 
-    // Feed PARTS_TO_RECEIVE parts. After the fix retry_count stays at 1;
-    // before the fix it would reach 1 + PARTS_TO_RECEIVE = 18 >= 16.
+    // Feed PARTS_TO_RECEIVE parts. Each new part is real progress and resets the
+    // retry budget to 0 (note_progress), so a slow-but-advancing transfer can
+    // never be failed by the cumulative cap. Before the reset-on-progress fix
+    // retry_count would climb to 1 + PARTS_TO_RECEIVE = 18 >= 16 and kill it.
     for part in parts.iter().take(PARTS_TO_RECEIVE) {
         let part_packet = resource_packet(PacketContext::Resource, part, *link.id());
         manager.handle_packet(&part_packet, &mut link);
@@ -91,7 +93,7 @@ fn resource_receiver_not_killed_by_timer_during_active_transfer() {
     // Because parts arrived just now, retry_due() returns false (last_progress
     // and last_request are fresh), so mark_request() is NOT called here.
     // The only check is `retry_count >= retry_limit`:
-    //   - After the fix:   retry_count = 1 < 16 → receiver kept  ✓
+    //   - After the fix:   retry_count = 0 < 16 → receiver kept  ✓
     //   - Before the fix:  retry_count = 18 >= 16 → receiver killed ✗
     let timer_now = Instant::now();
     manager.retry_requests(timer_now);
@@ -100,10 +102,10 @@ fn resource_receiver_not_killed_by_timer_during_active_transfer() {
         "receiver must NOT be killed by retry_requests() during active transfer"
     );
 
-    // retry_count must be 1 (only the initial advertisement request counts).
+    // Progress resets the retry budget, so retry_count is 0 after the parts.
     assert_eq!(
-        manager.incoming[&resource_hash].retry_count, 1,
-        "retry_count must not be incremented by incoming parts"
+        manager.incoming[&resource_hash].retry_count, 0,
+        "incoming parts (progress) must reset retry_count"
     );
 }
 

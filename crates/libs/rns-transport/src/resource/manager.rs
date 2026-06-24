@@ -94,8 +94,11 @@ impl ResourceManager {
             // on slow links, failing the transfer with parts=0/N. On fast links
             // `rtt` is small so this collapses to the flat `retry_interval`.
             let eff_interval = self.retry_interval.max(rtt.saturating_mul(2));
+            let window = self.link_stats.get(&receiver.link_id)
+                .map(|s| s.effective_window())
+                .unwrap_or(WINDOW);
             if receiver.retry_due(now, eff_interval, self.retry_limit) {
-                let request = receiver.build_request(now, rtt);
+                let request = receiver.build_request(now, rtt, window);
                 if !request.requested_hashes.is_empty() || request.hashmap_exhausted {
                     receiver.mark_request();
                     requests.push((receiver.link_id, request));
@@ -257,7 +260,7 @@ impl ResourceManager {
         // the bare STALE_GRACE_SECS constant); use the default 500 ms seed in
         // that case so the inbound EWMA can converge from a sensible baseline.
         let link_rtt = link.rtt();
-        let rtt = self.link_stats.entry(*link.id())
+        let stats = self.link_stats.entry(*link.id())
             .or_insert_with(|| {
                 if link_rtt == Duration::ZERO {
                     LinkStats::new()
@@ -269,9 +272,10 @@ impl ResourceManager {
                     );
                     LinkStats::new_with_rtt(link_stale)
                 }
-            })
-            .rtt;
-        let request = receiver.build_request(adv_now, rtt);
+            });
+        let rtt = stats.rtt;
+        let window = stats.effective_window();
+        let request = receiver.build_request(adv_now, rtt, window);
         log::debug!(
             "[resource-diag] request_parts hash={} requested={} exhausted={}",
             resource_hash,
@@ -334,10 +338,10 @@ impl ResourceManager {
         if let Some(receiver) = self.incoming.get_mut(&update.resource_hash) {
             receiver.handle_hash_update(&update);
             let update_now = Instant::now();
-            let rtt = self.link_stats.get(&receiver.link_id)
-                .map(|s| s.rtt)
-                .unwrap_or(LinkStats::new().rtt);
-            let request = receiver.build_request(update_now, rtt);
+            let (rtt, window) = self.link_stats.get(&receiver.link_id)
+                .map(|s| (s.rtt, s.effective_window()))
+                .unwrap_or((LinkStats::new().rtt, WINDOW));
+            let request = receiver.build_request(update_now, rtt, window);
             match build_link_packet(
                 link,
                 PacketType::Data,
@@ -396,6 +400,10 @@ impl ResourceManager {
 
                     if receiver.received > before_received {
                         stats.record_arrival(now);
+                        // Real progress: clear the retry budget so a slow but
+                        // advancing transfer is never failed by the cumulative
+                        // retry cap (see ResourceReceiver::note_progress).
+                        receiver.note_progress();
                         log::debug!(
                             "[resource-diag] progress hash={} received={}/{} bytes={}/{}",
                             hash,
@@ -412,7 +420,8 @@ impl ResourceManager {
                     }
 
                     let rtt = stats.rtt;
-                    let request = receiver.build_request(now, rtt);
+                    let window = stats.effective_window();
+                    let request = receiver.build_request(now, rtt, window);
                     if !request.requested_hashes.is_empty() || request.hashmap_exhausted {
                         receiver.mark_active_request();
                         request_packet = match build_link_packet(

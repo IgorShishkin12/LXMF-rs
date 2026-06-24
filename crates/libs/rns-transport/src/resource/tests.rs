@@ -583,4 +583,29 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn effective_window_adapts_to_bandwidth_delay_product() {
+        let mut s = LinkStats::new();
+
+        // Bootstrap: with no real arrival sample yet, fall back to WINDOW so we
+        // don't burst based on the arbitrary seed interval.
+        assert_eq!(s.effective_window(), WINDOW);
+
+        // Once arrivals are measured, the window is the bandwidth-delay product:
+        // rtt / arrival_interval = 12 s / 300 ms = 40 parts in flight.
+        s.arrival_samples = 5;
+        s.rtt = Duration::from_secs(12);
+        s.arrival_interval = Duration::from_millis(300);
+        assert_eq!(s.effective_window(), 40);
+
+        // A very fast link (tiny inter-arrival) is clamped to WINDOW_MAX so the
+        // sender's per-request burst stays bounded.
+        s.arrival_interval = Duration::from_millis(1);
+        assert_eq!(s.effective_window(), WINDOW_MAX);
+
+        // A very slow link never drops below the WINDOW floor.
+        s.arrival_interval = Duration::from_secs(60);
+        assert_eq!(s.effective_window(), WINDOW);
+    }
 }

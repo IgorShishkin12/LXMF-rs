@@ -15,7 +15,13 @@ use crate::hash::{AddressHash, Hash, ADDRESS_HASH_SIZE, HASH_SIZE};
 use crate::packet::DestinationType;
 use crate::packet::{Header, Packet, PacketContext, PacketDataBuffer, PacketType, PACKET_MDU};
 
+/// Minimum number of fragments the receiver keeps in flight. Also the bootstrap
+/// window used before the link's arrival rate has been measured.
 pub const WINDOW: usize = 4;
+/// Upper bound on the adaptive in-flight window (see `LinkStats::effective_window`).
+/// Caps the burst the sender must emit in response to a single request so a fast
+/// link can pipeline without overwhelming the interface TX queue.
+pub const WINDOW_MAX: usize = 64;
 pub const MAPHASH_LEN: usize = 4;
 pub const RANDOM_HASH_SIZE: usize = 4;
 pub const ADVERTISEMENT_OVERHEAD: usize = 134;
@@ -92,6 +98,10 @@ pub(crate) struct LinkStats {
     /// EWMA of inter-arrival interval between consecutive received parts.
     pub(crate) arrival_interval: Duration,
     pub(crate) last_arrival: Option<Instant>,
+    /// Number of inter-arrival samples folded into `arrival_interval`. Until at
+    /// least one real sample exists the EWMA still holds its (arbitrary) seed,
+    /// so the adaptive window must not trust it yet.
+    pub(crate) arrival_samples: u32,
 }
 
 impl LinkStats {
@@ -100,6 +110,7 @@ impl LinkStats {
             rtt: Duration::from_millis(500),
             arrival_interval: Duration::from_millis(100),
             last_arrival: None,
+            arrival_samples: 0,
         }
     }
 
@@ -114,8 +125,24 @@ impl LinkStats {
     pub(crate) fn record_arrival(&mut self, now: Instant) {
         if let Some(last) = self.last_arrival {
             self.arrival_interval = ewma(self.arrival_interval, now.duration_since(last));
+            self.arrival_samples = self.arrival_samples.saturating_add(1);
         }
         self.last_arrival = Some(now);
+    }
+
+    /// Number of fragments to keep in flight, sized to the link's bandwidth-delay
+    /// product: parts that fit in one round-trip ≈ `rtt / arrival_interval`. This
+    /// lets a fast/low-latency link pipeline many parts while a slow link stays
+    /// conservative — reusing the rtt/arrival estimates the link already learned
+    /// rather than a one-size constant. Falls back to `WINDOW` until a real
+    /// arrival sample exists (bootstrap), and is clamped to `[WINDOW, WINDOW_MAX]`.
+    pub(crate) fn effective_window(&self) -> usize {
+        if self.arrival_samples == 0 {
+            return WINDOW;
+        }
+        let interval = self.arrival_interval.as_micros().max(1);
+        let bdp = (self.rtt.as_micros() / interval) as usize;
+        bdp.clamp(WINDOW, WINDOW_MAX)
     }
 }
 

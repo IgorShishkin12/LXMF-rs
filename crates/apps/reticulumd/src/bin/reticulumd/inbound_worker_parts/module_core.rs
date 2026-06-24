@@ -124,12 +124,10 @@ pub(super) fn spawn_inbound_worker(
                                         )
                                         .await
                                     {
-                                        if diagnostics_enabled() {
-                                            log::debug!(
-                                                "[daemon-rx] dropping inbound propagation resource: {}",
-                                                error
-                                            );
-                                        }
+                                        log::debug!(
+                                            "[daemon-rx] dropping inbound propagation resource: {}",
+                                            error
+                                        );
                                     }
                                 }
                             }
@@ -273,14 +271,12 @@ fn spawn_packet_inbound_worker(
                     )
                     .await
                     else {
-                        if diagnostics_enabled() {
-                            log::debug!(
-                                "[daemon-rx] skipping unresolved full-wire payload: dst={} len={} ctx={:?}",
-                                raw_destination_hex,
-                                data.len(),
-                                event.context
-                            );
-                        }
+                        log::debug!(
+                            "[daemon-rx] skipping unresolved full-wire payload: dst={} len={} ctx={:?}",
+                            raw_destination_hex,
+                            data.len(),
+                            event.context
+                        );
                         continue;
                     };
 
@@ -308,12 +304,10 @@ fn spawn_packet_inbound_worker(
                             )
                             .await
                             {
-                                if diagnostics_enabled() {
-                                    log::debug!(
-                                        "[daemon-rx] dropping inbound propagation payload: dst={} error={}",
-                                        raw_destination_hex, error
-                                    );
-                                }
+                                log::debug!(
+                                    "[daemon-rx] dropping inbound propagation payload: dst={} error={}",
+                                    raw_destination_hex, error
+                                );
                             }
                             continue;
                         }
@@ -331,12 +325,10 @@ fn spawn_packet_inbound_worker(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    if diagnostics_enabled() {
-                        log::debug!(
-                            "[daemon-rx] received-data channel lagged; skipped {} events",
-                            skipped
-                        );
-                    }
+                    log::debug!(
+                        "[daemon-rx] received-data channel lagged; skipped {} events",
+                        skipped
+                    );
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }

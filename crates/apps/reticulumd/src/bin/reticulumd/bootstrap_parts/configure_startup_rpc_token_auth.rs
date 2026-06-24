@@ -159,11 +159,13 @@ fn env_capabilities(key: &str) -> Option<Vec<String>> {
         .filter(|capabilities| !capabilities.is_empty())
 }
 
-fn env_u64(key: &str) -> Option<u64> {
-    std::env::var(key)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|value| *value > 0)
+fn env_u64(key: &str) -> Result<Option<u64>, &'static str> {
+    let value = match std::env::var(key) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    let parsed = value.trim().parse::<u64>().map_err(|_| "invalid u64 value")?;
+    Ok((parsed > 0).then_some(parsed))
 }
 
 fn spawn_destination_announce_scheduler(
@@ -204,7 +206,7 @@ fn spawn_bridge_propagation_announce_scheduler(bridge: Arc<TransportBridge>, int
 fn encode_propagation_node_app_data(
     display_name: Option<&str>,
     config: PropagationNodeAnnounceConfig,
-) -> Option<Vec<u8>> {
+) -> Result<Vec<u8>, rmp_serde::encode::Error> {
     encode_python_propagation_node_app_data(
         display_name,
         PropagationNodeAnnounceConfig {

@@ -113,7 +113,7 @@ impl RpcBackendClient {
         let category = error
             .category
             .as_deref()
-            .and_then(Self::parse_error_category)
+            .and_then(|c| Self::parse_error_category(c).ok())
             .unwrap_or_else(|| Self::map_category(machine_code.as_str()));
         let mut sdk_error = SdkError::new(machine_code, category, error.message);
         if let Some(retryable) = error.retryable {
@@ -172,20 +172,20 @@ impl RpcBackendClient {
         ErrorCategory::Internal
     }
 
-    fn parse_error_category(raw: &str) -> Option<ErrorCategory> {
+    fn parse_error_category(raw: &str) -> Result<ErrorCategory, &'static str> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "validation" => Some(ErrorCategory::Validation),
-            "capability" => Some(ErrorCategory::Capability),
-            "config" => Some(ErrorCategory::Config),
-            "policy" => Some(ErrorCategory::Policy),
-            "transport" => Some(ErrorCategory::Transport),
-            "storage" => Some(ErrorCategory::Storage),
-            "crypto" => Some(ErrorCategory::Crypto),
-            "timeout" => Some(ErrorCategory::Timeout),
-            "runtime" => Some(ErrorCategory::Runtime),
-            "security" => Some(ErrorCategory::Security),
-            "internal" => Some(ErrorCategory::Internal),
-            _ => None,
+            "validation" => Ok(ErrorCategory::Validation),
+            "capability" => Ok(ErrorCategory::Capability),
+            "config" => Ok(ErrorCategory::Config),
+            "policy" => Ok(ErrorCategory::Policy),
+            "transport" => Ok(ErrorCategory::Transport),
+            "storage" => Ok(ErrorCategory::Storage),
+            "crypto" => Ok(ErrorCategory::Crypto),
+            "timeout" => Ok(ErrorCategory::Timeout),
+            "runtime" => Ok(ErrorCategory::Runtime),
+            "security" => Ok(ErrorCategory::Security),
+            "internal" => Ok(ErrorCategory::Internal),
+            _ => Err("unknown error category"),
         }
     }
 
@@ -339,6 +339,13 @@ impl RpcBackendClient {
     pub(super) fn mtls_for_session_auth(auth: &SessionAuth) -> Option<MtlsRequestAuth> {
         match auth {
             SessionAuth::Mtls { ca_bundle_path, client_cert_path, client_key_path } => {
+                // Config validation guarantees a non-empty ca_bundle_path before an mTLS
+                // session is constructed (see sdkconfig.rs), so an empty path is impossible
+                // here — assert the invariant rather than carry a dead error branch.
+                debug_assert!(
+                    !ca_bundle_path.trim().is_empty(),
+                    "mTLS session auth must carry a non-empty ca_bundle_path"
+                );
                 Some(MtlsRequestAuth {
                     ca_bundle_path: ca_bundle_path.clone(),
                     client_cert_path: client_cert_path.clone(),

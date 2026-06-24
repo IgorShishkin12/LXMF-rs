@@ -238,7 +238,7 @@ async fn propagation_signal_waiter_detects_invalid_stamp_rejection() {
 
     assert_eq!(
         wait_for_propagation_signal(&mut rx, link_id, Duration::from_millis(200)).await,
-        Some(0xf5)
+        Ok(0xf5)
     );
 }
 
@@ -283,7 +283,8 @@ async fn test_transport_bridge_fixture_with_peer(
         encode_propagation_node_app_data(
             Some("Bridge Node"),
             PropagationNodeAnnounceConfig::default(),
-        ),
+        )
+        .ok(),
         None,
         peer_crypto,
         receipt_map,
@@ -328,9 +329,9 @@ async fn transport_bridge_regenerates_propagation_app_data_from_daemon_state() {
 
     assert_eq!(entries.get(3).and_then(rmpv::Value::as_u64), Some(333));
     assert_eq!(entries.get(4).and_then(rmpv::Value::as_u64), Some(999));
-    assert_eq!(pn_stamp_cost_from_app_data(app_data.as_slice()), Some(22));
-    assert_eq!(pn_stamp_cost_flexibility_from_app_data(app_data.as_slice()), Some(6));
-    assert_eq!(pn_peering_cost_from_app_data(app_data.as_slice()), Some(17));
+    assert_eq!(pn_stamp_cost_from_app_data(app_data.as_slice()).expect("ok"), 22);
+    assert_eq!(pn_stamp_cost_flexibility_from_app_data(app_data.as_slice()).expect("ok"), 6);
+    assert_eq!(pn_peering_cost_from_app_data(app_data.as_slice()).expect("ok"), 17);
 }
 
 #[tokio::test]

@@ -92,27 +92,35 @@ impl OutboundBridge for TransportBridge {
                     }
                 };
                 cached.or_else(|| {
-                        let hash = parse_destination_hash_required(node_hex).ok()?;
-                        let hash = AddressHash::new(hash);
-                        if let Some(identity) = identity_resolver::persisted_identity_for_destination(
-                            daemon.as_ref(),
-                            hash,
-                        ) {
-                            if let Ok(mut guard) = self.outbound_propagation_identities.lock() {
-                                guard.insert(node_hex.to_string(), identity);
-                            }
-                            return Some(identity);
-                        }
-                        let identity = resolve_destination_identity_blocking(
-                            self.transport.clone(),
-                            hash,
-                            Duration::from_secs(12),
-                        )?;
+                    let hash = parse_destination_hash_required(node_hex).ok()?;
+                    let hash = AddressHash::new(hash);
+                    if let Some(identity) =
+                        identity_resolver::persisted_identity_for_destination(daemon.as_ref(), hash)
+                    {
                         if let Ok(mut guard) = self.outbound_propagation_identities.lock() {
                             guard.insert(node_hex.to_string(), identity);
                         }
-                        Some(identity)
-                    })
+                        return Some(identity);
+                    }
+                    let identity = match resolve_destination_identity_blocking(
+                        self.transport.clone(),
+                        hash,
+                        Duration::from_secs(12),
+                    ) {
+                        Ok(Some(id)) => id,
+                        Ok(None) => return None,
+                        Err(err) => {
+                            log::warn!(
+                                "[daemon] identity resolver for propagation node {node_hex}: {err}"
+                            );
+                            return None;
+                        }
+                    };
+                    if let Ok(mut guard) = self.outbound_propagation_identities.lock() {
+                        guard.insert(node_hex.to_string(), identity);
+                    }
+                    Some(identity)
+                })
             })
         } else {
             None

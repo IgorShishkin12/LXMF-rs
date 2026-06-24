@@ -135,7 +135,7 @@ impl RpcDaemon {
                         jti_ttl_ms,
                         clock_skew_secs,
                         shared_secret,
-                    ) = self.sdk_token_auth_config().ok_or_else(|| {
+                    ) = self.sdk_token_auth_config().map_err(|_| {
                         RpcError::new(
                             "SDK_SECURITY_AUTH_REQUIRED".to_string(),
                             "token auth mode requires token auth configuration".to_string(),
@@ -188,15 +188,10 @@ impl RpcDaemon {
                     let signed_payload = zeroize::Zeroizing::new(format!(
                         "iss={issuer};aud={audience};jti={jti};sub={subject};iat={iat};exp={exp}"
                     ));
-                    let expected_signature = zeroize::Zeroizing::new(
-                        Self::token_signature(shared_secret.as_str(), signed_payload.as_str())
-                            .ok_or_else(|| {
-                                RpcError::new(
-                                    "SDK_SECURITY_TOKEN_INVALID".to_string(),
-                                    "token signature verification failed".to_string(),
-                                )
-                            })?,
-                    );
+                    let expected_signature = zeroize::Zeroizing::new(Self::token_signature(
+                        shared_secret.as_str(),
+                        signed_payload.as_str(),
+                    ));
                     if signature != expected_signature.as_str() {
                         return Err(RpcError::new(
                             "SDK_SECURITY_TOKEN_INVALID".to_string(),

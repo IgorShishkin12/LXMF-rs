@@ -3,7 +3,7 @@ use super::bridge_helpers::diagnostics_enabled;
 use reticulum_daemon::announce_names::{
     delivery_stamp_cost_from_app_data, lxmf_aspect_from_name_hash, parse_peer_name_from_app_data,
     pn_peering_cost_from_app_data, pn_stamp_cost_flexibility_from_app_data,
-    pn_stamp_cost_from_app_data,
+    pn_stamp_cost_from_app_data, AnnounceNamesDecodeError,
 };
 use rns_rpc::RpcDaemon;
 use rns_transport::time::now_epoch_secs_i64;
@@ -19,9 +19,18 @@ pub(super) async fn ingest_announce_event(
     let dest = event.destination.lock().await;
     let peer = hex::encode(dest.desc.address_hash.as_slice());
     let identity = dest.desc.identity;
-    let (peer_name, peer_name_source) = parse_peer_name_from_app_data(event.app_data.as_slice())
-        .map(|(name, source)| (Some(name), Some(source.to_string())))
-        .unwrap_or((None, None));
+    let (peer_name, peer_name_source) = if event.app_data.is_empty() {
+        (None, None)
+    } else {
+        match parse_peer_name_from_app_data(event.app_data.as_slice()) {
+            Ok(Some((name, source))) => (Some(name), Some(source.to_string())),
+            Ok(None) => (None, None),
+            Err(e) => {
+                log::warn!("[daemon] rx announce peer={}: failed to parse peer name: {e}", peer);
+                (None, None)
+            }
+        }
+    };
     let _ratchet = event.ratchet;
     peer_crypto.lock().expect("peer map").insert(peer.clone(), PeerCrypto { identity });
     if diagnostics_enabled() {
@@ -37,6 +46,27 @@ pub(super) async fn ingest_announce_event(
     let aspect = lxmf_aspect_from_name_hash(dest.desc.name.as_name_hash_slice());
     let hops = Some(u32::from(event.hops));
     let interface = Some(hex::encode(event.interface.as_slice()));
+    let stamp_cost = match announce_stamp_cost(aspect.as_deref(), app_data) {
+        Ok(cost) => cost,
+        Err(e) => {
+            log::debug!("[daemon] rx announce peer={}: failed to parse stamp cost: {e}", peer);
+            None
+        }
+    };
+    let pn_flexibility = match pn_stamp_cost_flexibility_from_app_data(app_data) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            log::debug!("[daemon] rx announce peer={}: no PN stamp cost flexibility: {e}", peer);
+            None
+        }
+    };
+    let pn_peering = match pn_peering_cost_from_app_data(app_data) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            log::debug!("[daemon] rx announce peer={}: no PN peering cost: {e}", peer);
+            None
+        }
+    };
     let _ = daemon.accept_announce_with_metadata(
         peer.clone(),
         timestamp,
@@ -47,9 +77,9 @@ pub(super) async fn ingest_announce_event(
         None,
         None,
         None,
-        announce_stamp_cost(aspect.as_deref(), app_data),
-        Some(pn_stamp_cost_flexibility_from_app_data(app_data)),
-        Some(pn_peering_cost_from_app_data(app_data)),
+        stamp_cost,
+        Some(pn_flexibility),
+        Some(pn_peering),
         aspect,
         hops,
         interface,
@@ -65,10 +95,13 @@ pub(super) async fn ingest_announce_event(
     );
 }
 
-fn announce_stamp_cost(aspect: Option<&str>, app_data: &[u8]) -> Option<u32> {
+fn announce_stamp_cost(
+    aspect: Option<&str>,
+    app_data: &[u8],
+) -> Result<Option<u32>, AnnounceNamesDecodeError> {
     match aspect {
         Some("lxmf.delivery") => delivery_stamp_cost_from_app_data(app_data),
-        _ => pn_stamp_cost_from_app_data(app_data),
+        _ => pn_stamp_cost_from_app_data(app_data).map(Some),
     }
 }
 
@@ -85,7 +118,10 @@ mod tests {
         let app_data =
             encode_delivery_announce_app_data("peer", Some(19)).expect("delivery app data");
 
-        assert_eq!(announce_stamp_cost(Some("lxmf.delivery"), app_data.as_slice()), Some(19));
+        assert_eq!(
+            announce_stamp_cost(Some("lxmf.delivery"), app_data.as_slice()).expect("ok"),
+            Some(19)
+        );
     }
 
     #[test]
@@ -101,7 +137,10 @@ mod tests {
         )
         .expect("propagation app data");
 
-        assert_eq!(announce_stamp_cost(Some("lxmf.propagation"), app_data.as_slice()), Some(21));
-        assert_eq!(announce_stamp_cost(None, app_data.as_slice()), Some(21));
+        assert_eq!(
+            announce_stamp_cost(Some("lxmf.propagation"), app_data.as_slice()).expect("ok"),
+            Some(21)
+        );
+        assert_eq!(announce_stamp_cost(None, app_data.as_slice()).expect("ok"), Some(21));
     }
 }

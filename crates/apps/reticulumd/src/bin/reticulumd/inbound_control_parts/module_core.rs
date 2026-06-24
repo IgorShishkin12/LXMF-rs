@@ -50,11 +50,18 @@ pub(super) fn spawn_control_worker(
             }
             match payload.context() {
                 PacketContext::LinkIdentify => {
-                    if let Some(identity) =
-                        parse_link_identify_payload(payload.as_slice(), &event.id)
-                    {
-                        if let Ok(mut guard) = control.identified_peer_links.lock() {
-                            guard.insert(event.id, identity);
+                    match parse_link_identify_payload(payload.as_slice(), &event.id) {
+                        Ok(identity) => {
+                            if let Ok(mut guard) = control.identified_peer_links.lock() {
+                                guard.insert(event.id, identity);
+                            }
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "[daemon-control] invalid link identify payload link={} err={}",
+                                event.id,
+                                err
+                            );
                         }
                     }
                 }
@@ -110,17 +117,21 @@ fn clear_validated_peer_link(control: &PropagationControlContext, link_id: &Addr
     }
 }
 
-fn parse_link_identify_payload(payload: &[u8], link_id: &AddressHash) -> Option<Identity> {
+fn parse_link_identify_payload(
+    payload: &[u8],
+    link_id: &AddressHash,
+) -> Result<Identity, &'static str> {
     if payload.len() < 32 + 32 + 64 {
-        return None;
+        return Err("payload too short");
     }
     let identity = Identity::new_from_slices(&payload[..32], &payload[32..64]);
-    let signature = ed25519_dalek::Signature::from_slice(&payload[64..128]).ok()?;
+    let signature = ed25519_dalek::Signature::from_slice(&payload[64..128])
+        .map_err(|_| "invalid signature bytes")?;
     let mut signed = Vec::with_capacity(16 + 64);
     signed.extend_from_slice(link_id.as_slice());
     signed.extend_from_slice(&payload[..64]);
-    identity.verify(&signed, &signature).ok()?;
-    Some(identity)
+    identity.verify(&signed, &signature).map_err(|_| "signature verification failed")?;
+    Ok(identity)
 }
 
 fn handle_control_request(
@@ -149,8 +160,12 @@ fn handle_control_request(
         return ControlResponse::Code(ERROR_NO_ACCESS);
     }
 
-    let Some((path_hash, data)) = parse_control_request_payload(payload) else {
-        return ControlResponse::Code(ERROR_INVALID_DATA);
+    let (path_hash, data) = match parse_control_request_payload(payload) {
+        Ok(v) => v,
+        Err(err) => {
+            log::warn!("[daemon-control] failed to parse control request payload: {err}");
+            return ControlResponse::Code(ERROR_INVALID_DATA);
+        }
     };
     if propagation_destination {
         if path_hash == control_path_hash("/offer") {
@@ -267,27 +282,26 @@ fn control_identity_allowed(control: &PropagationControlContext, remote_hash: &s
         .any(|candidate| candidate.eq_ignore_ascii_case(remote_hash))
 }
 
-fn parse_control_request_payload(payload: &[u8]) -> Option<([u8; 16], Option<rmpv::Value>)> {
-    let value = match rmp_serde::from_slice::<rmpv::Value>(payload) {
-        Ok(value) => value,
-        Err(err) => {
-            log::warn!("[daemon-control] failed to decode control request payload: {err}");
-            return None;
-        }
-    };
+fn parse_control_request_payload(
+    payload: &[u8],
+) -> Result<([u8; 16], Option<rmpv::Value>), String> {
+    let value = rmp_serde::from_slice::<rmpv::Value>(payload).map_err(|e| e.to_string())?;
     let rmpv::Value::Array(entries) = value else {
-        return None;
+        return Err("control request payload is not an array".to_string());
     };
     if entries.len() != 3 {
-        return None;
+        return Err(format!(
+            "control request payload array has {} entries, expected 3",
+            entries.len()
+        ));
     }
-    let path_bytes = match entries.get(1)? {
-        rmpv::Value::Binary(bytes) if bytes.len() == 16 => bytes,
-        _ => return None,
+    let path_bytes = match entries.get(1) {
+        Some(rmpv::Value::Binary(bytes)) if bytes.len() == 16 => bytes,
+        _ => return Err("control request path hash missing or wrong length".to_string()),
     };
     let mut path_hash = [0u8; 16];
     path_hash.copy_from_slice(path_bytes.as_slice());
-    Some((path_hash, entries.get(2).cloned()))
+    Ok((path_hash, entries.get(2).cloned()))
 }
 
 fn control_path_hash(path: &str) -> [u8; 16] {

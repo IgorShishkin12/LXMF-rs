@@ -23,18 +23,49 @@ impl RpcDaemon {
 
     pub(super) fn sdk_token_auth_config(
         &self,
-    ) -> Option<(String, String, u64, u64, zeroize::Zeroizing<String>)> {
+    ) -> std::io::Result<(String, String, u64, u64, zeroize::Zeroizing<String>)> {
         let config_guard =
-            self.sdk_runtime_config.lock().expect("sdk_runtime_config mutex poisoned");
-        let token_auth = config_guard.get("rpc_backend")?.get("token_auth")?;
-        let issuer = token_auth.get("issuer")?.as_str()?.to_string();
-        let audience = token_auth.get("audience")?.as_str()?.to_string();
-        let jti_ttl_ms = token_auth.get("jti_cache_ttl_ms")?.as_u64()?;
+            self.sdk_runtime_config.lock().map_err(|e| std::io::Error::other(e.to_string()))?;
+        let token_auth =
+            config_guard.get("rpc_backend").and_then(|v| v.get("token_auth")).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "token auth config missing")
+            })?;
+        let issuer = token_auth
+            .get("issuer")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "token auth issuer missing")
+            })?
+            .to_string();
+        let audience = token_auth
+            .get("audience")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "token auth audience missing")
+            })?
+            .to_string();
+        let jti_ttl_ms =
+            token_auth.get("jti_cache_ttl_ms").and_then(JsonValue::as_u64).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "token auth jti_cache_ttl_ms missing",
+                )
+            })?;
         let clock_skew_secs =
             token_auth.get("clock_skew_ms").and_then(JsonValue::as_u64).unwrap_or(0) / 1000;
-        let shared_secret =
-            zeroize::Zeroizing::new(token_auth.get("shared_secret")?.as_str()?.to_string());
-        Some((issuer, audience, jti_ttl_ms, clock_skew_secs, shared_secret))
+        let shared_secret = zeroize::Zeroizing::new(
+            token_auth
+                .get("shared_secret")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "token auth shared_secret missing",
+                    )
+                })?
+                .to_string(),
+        );
+        Ok((issuer, audience, jti_ttl_ms, clock_skew_secs, shared_secret))
     }
 
     pub(super) fn sdk_mtls_auth_config(&self) -> Option<(bool, Option<String>)> {
@@ -75,11 +106,11 @@ impl RpcDaemon {
         Some(claims)
     }
 
-    pub(super) fn token_signature(secret: &str, payload: &str) -> Option<String> {
+    pub(super) fn token_signature(secret: &str, payload: &str) -> String {
         let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes())
             .expect("HMAC key length is valid for HMAC-SHA256");
         mac.update(payload.as_bytes());
-        Some(hex::encode(mac.finalize().into_bytes()))
+        hex::encode(mac.finalize().into_bytes())
     }
 
     pub(super) fn is_loopback_source(source: &str) -> bool {

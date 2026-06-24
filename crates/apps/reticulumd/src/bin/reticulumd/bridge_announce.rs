@@ -9,32 +9,59 @@ use rns_rpc::AnnounceBridge;
 impl TransportBridge {
     fn current_delivery_announce_app_data(&self) -> Option<Vec<u8>> {
         let app_data = self.announce_app_data.clone()?;
-        let Some((display_name, _)) = parse_peer_name_from_app_data(app_data.as_slice()) else {
+        if app_data.is_empty() {
+            return Some(app_data);
+        }
+        let Some((display_name, _)) = (match parse_peer_name_from_app_data(app_data.as_slice()) {
+            Ok(opt) => opt,
+            Err(e) => {
+                log::warn!("[daemon] failed to parse peer name from delivery app data: {e}");
+                None
+            }
+        }) else {
             return Some(app_data);
         };
-        encode_delivery_announce_app_data_with_capabilities(
-            display_name.as_str(),
-            self.current_inbound_stamp_cost(),
-            &self.announce_capabilities,
+        Some(
+            encode_delivery_announce_app_data_with_capabilities(
+                display_name.as_str(),
+                self.current_inbound_stamp_cost().unwrap_or_else(|err| {
+                    log::warn!("[daemon] failed to read daemon state for delivery announce: {err}");
+                    None
+                }),
+                &self.announce_capabilities,
+            )
+            .unwrap_or_else(|e| {
+                log::warn!("[daemon] failed to encode delivery announce app data: {e}");
+                app_data
+            }),
         )
-        .or(Some(app_data))
     }
 
-    fn current_inbound_stamp_cost(&self) -> Option<u32> {
+    fn current_inbound_stamp_cost(&self) -> Result<Option<u32>, &'static str> {
         let daemon = match self.daemon.lock() {
-            Ok(daemon) => daemon.clone()?,
-            Err(err) => {
-                log::warn!("[daemon] failed to read daemon state for delivery announce: {err}");
-                return None;
-            }
+            Ok(daemon) => daemon.clone(),
+            Err(_) => return Err("daemon state lock poisoned"),
+        };
+        let Some(daemon) = daemon else {
+            return Ok(None);
         };
         let target_cost = daemon.current_stamp_policy().target_cost;
-        (target_cost > 0 && target_cost < 255).then_some(target_cost)
+        Ok((target_cost > 0 && target_cost < 255).then_some(target_cost))
     }
 
     fn current_propagation_announce_app_data(&self) -> Option<Vec<u8>> {
         let fallback = self.propagation_announce_app_data.clone()?;
-        let display_name = parse_peer_name_from_app_data(fallback.as_slice()).map(|(name, _)| name);
+        let display_name = if fallback.is_empty() {
+            None
+        } else {
+            match parse_peer_name_from_app_data(fallback.as_slice()) {
+                Ok(opt) => opt.map(|(name, _)| name),
+                Err(e) => {
+                    log::warn!("[daemon] failed to parse peer name from propagation app data: {e}");
+                    None
+                }
+            }
+        };
         let daemon = match self.daemon.lock() {
             Ok(daemon) => {
                 let Some(daemon) = daemon.clone() else {
@@ -48,25 +75,30 @@ impl TransportBridge {
             }
         };
         let state = daemon.current_propagation_state();
-        encode_python_propagation_node_app_data(
-            display_name.as_deref(),
-            PropagationNodeAnnounceConfig {
-                enabled: state.enabled,
-                timebase: now_secs_i64(),
-                transfer_limit_kb: state.propagation_limit,
-                sync_limit_kb: state.sync_limit,
-                stamp_cost: if state.target_cost > 0 {
-                    state.target_cost
-                } else {
-                    PropagationNodeAnnounceConfig::default().stamp_cost
+        Some(
+            encode_python_propagation_node_app_data(
+                display_name.as_deref(),
+                PropagationNodeAnnounceConfig {
+                    enabled: state.enabled,
+                    timebase: now_secs_i64(),
+                    transfer_limit_kb: state.propagation_limit,
+                    sync_limit_kb: state.sync_limit,
+                    stamp_cost: if state.target_cost > 0 {
+                        state.target_cost
+                    } else {
+                        PropagationNodeAnnounceConfig::default().stamp_cost
+                    },
+                    stamp_cost_flexibility: state.stamp_cost_flexibility,
+                    peering_cost: state
+                        .peering_cost
+                        .unwrap_or_else(|| PropagationNodeAnnounceConfig::default().peering_cost),
                 },
-                stamp_cost_flexibility: state.stamp_cost_flexibility,
-                peering_cost: state
-                    .peering_cost
-                    .unwrap_or_else(|| PropagationNodeAnnounceConfig::default().peering_cost),
-            },
+            )
+            .unwrap_or_else(|e| {
+                log::warn!("[daemon] failed to encode propagation announce app data: {e}");
+                fallback
+            }),
         )
-        .or(Some(fallback))
     }
 
     #[cfg(test)]

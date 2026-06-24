@@ -22,6 +22,10 @@ pub(super) fn encode_paper(
                 AddressHash::new(destination),
                 Duration::from_secs(12),
             )
+            .unwrap_or_else(|err| {
+                log::warn!("[daemon] identity resolver for paper delivery: {err}");
+                None
+            })
         });
     let Some(destination_identity) = destination_identity else {
         return Ok(None);
@@ -81,7 +85,13 @@ pub(super) fn decode_paper_uri(
             .unwrap_or_default(),
         timestamp: wire.payload.timestamp as i64,
         direction: "in".to_string(),
-        fields: wire.payload.fields.as_ref().and_then(rmpv_to_json),
+        fields: wire
+            .payload
+            .fields
+            .as_ref()
+            .map(rmpv_to_json)
+            .transpose()
+            .map_err(std::io::Error::other)?,
         receipt_status: None,
     };
     Ok(Some(PaperDecodeOutcome {

@@ -4,49 +4,42 @@ const EVENT_SINK_QUEUE_CAPACITY: usize = 1024;
 
 impl RpcDaemon {
     pub(super) fn spawn_event_sink_worker(
-        enabled: bool,
         metrics: Arc<Mutex<RpcMetrics>>,
-    ) -> Option<mpsc::SyncSender<EventSinkCommand>> {
-        if !enabled {
-            return None;
-        }
+    ) -> std::io::Result<mpsc::SyncSender<EventSinkCommand>> {
         let (tx, rx) = mpsc::sync_channel::<EventSinkCommand>(EVENT_SINK_QUEUE_CAPACITY);
-        std::thread::Builder::new()
-            .name("rpc-event-sink-worker".to_string())
-            .spawn(move || {
-                while let Ok(command) = rx.recv() {
-                    match command {
-                        EventSinkCommand::Publish { sink, sink_kind, envelope } => {
-                            let result = sink.publish(&envelope);
-                            let mut metrics = metrics.lock().expect("sdk_metrics mutex poisoned");
-                            match result {
-                                Ok(()) => {
-                                    metrics.sdk_event_sink_publish_total =
-                                        metrics.sdk_event_sink_publish_total.saturating_add(1);
-                                    Self::metrics_increment(
-                                        &mut metrics.sdk_event_sink_publish_by_kind,
-                                        sink_kind.as_str(),
-                                    );
-                                }
-                                Err(_) => {
-                                    metrics.sdk_event_sink_error_total =
-                                        metrics.sdk_event_sink_error_total.saturating_add(1);
-                                    Self::metrics_increment(
-                                        &mut metrics.sdk_event_sink_errors_by_kind,
-                                        sink_kind.as_str(),
-                                    );
-                                }
+        std::thread::Builder::new().name("rpc-event-sink-worker".to_string()).spawn(move || {
+            while let Ok(command) = rx.recv() {
+                match command {
+                    EventSinkCommand::Publish { sink, sink_kind, envelope } => {
+                        let result = sink.publish(&envelope);
+                        let mut metrics = metrics.lock().expect("sdk_metrics mutex poisoned");
+                        match result {
+                            Ok(()) => {
+                                metrics.sdk_event_sink_publish_total =
+                                    metrics.sdk_event_sink_publish_total.saturating_add(1);
+                                Self::metrics_increment(
+                                    &mut metrics.sdk_event_sink_publish_by_kind,
+                                    sink_kind.as_str(),
+                                );
+                            }
+                            Err(_) => {
+                                metrics.sdk_event_sink_error_total =
+                                    metrics.sdk_event_sink_error_total.saturating_add(1);
+                                Self::metrics_increment(
+                                    &mut metrics.sdk_event_sink_errors_by_kind,
+                                    sink_kind.as_str(),
+                                );
                             }
                         }
-                        #[cfg(test)]
-                        EventSinkCommand::Flush { reply } => {
-                            let _ = reply.send(());
-                        }
+                    }
+                    #[cfg(test)]
+                    EventSinkCommand::Flush { reply } => {
+                        let _ = reply.send(());
                     }
                 }
-            })
-            .expect("spawn rpc event sink worker");
-        Some(tx)
+            }
+        })?;
+        Ok(tx)
     }
 
     pub(super) fn sdk_event_sink_enabled(&self) -> bool {
@@ -71,12 +64,16 @@ impl RpcDaemon {
             .unwrap_or(65_536)
     }
 
-    pub(super) fn sdk_event_sink_allowed_kinds(&self) -> Option<HashSet<String>> {
-        let config = self.sdk_runtime_config.lock().expect("sdk_runtime_config mutex poisoned");
-        let kinds = config
+    pub(super) fn sdk_event_sink_allowed_kinds(&self) -> std::io::Result<Option<HashSet<String>>> {
+        let config =
+            self.sdk_runtime_config.lock().map_err(|e| std::io::Error::other(e.to_string()))?;
+        let Some(kinds) = config
             .get("event_sink")
             .and_then(|value| value.get("allow_kinds"))
-            .and_then(JsonValue::as_array)?;
+            .and_then(JsonValue::as_array)
+        else {
+            return Ok(None);
+        };
         let mut allowed = HashSet::new();
         for kind in kinds {
             if let Some(normalized) = kind
@@ -88,11 +85,7 @@ impl RpcDaemon {
                 allowed.insert(normalized);
             }
         }
-        if allowed.is_empty() {
-            None
-        } else {
-            Some(allowed)
-        }
+        Ok((!allowed.is_empty()).then_some(allowed))
     }
 
     pub(super) fn dispatch_event_sink_bridges(&self, seq_no: u64, event: &RpcEvent) {
@@ -119,7 +112,10 @@ impl RpcDaemon {
             self.metrics_record_event_sink_skipped();
             return;
         }
-        let allowed_kinds = self.sdk_event_sink_allowed_kinds();
+        let allowed_kinds = self.sdk_event_sink_allowed_kinds().unwrap_or_else(|err| {
+            log::warn!("[daemon] event sink allowed_kinds lock error: {err}");
+            None
+        });
 
         for sink in &self.event_sink_bridges {
             let sink_kind = sink.sink_kind().trim().to_ascii_lowercase();

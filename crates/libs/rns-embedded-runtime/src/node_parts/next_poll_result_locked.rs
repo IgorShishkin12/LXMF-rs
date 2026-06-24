@@ -211,6 +211,10 @@ fn driver_tick(inner: &Arc<StdNodeInner>, epoch: u64) -> bool {
 
 #[cfg(feature = "std")]
 fn stop_driver_locked(state: &mut NodeState) -> Option<JoinHandle<()>> {
+    // Both `None` outcomes are genuine absence, not failure: no driver running, or a driver
+    // present whose join handle we no longer hold (not yet stored mid-start, or already taken
+    // by a prior stop — the double-stop path is a supported, tested flow). There is no error to
+    // surface, so this stays a plain `Option` (KEEP).
     let driver = state.driver.as_mut()?;
     driver.stop_requested = true;
     driver.handle.take()

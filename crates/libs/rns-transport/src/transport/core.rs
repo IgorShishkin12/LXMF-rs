@@ -311,16 +311,21 @@ impl Transport {
     }
 
     pub async fn handle_inbound_for_test(&self, packet: Packet) {
-        let (receipt, receipt_handler) = {
+        let (receipt_hash, receipt_handler) = {
             let handler = self.handler.lock().await;
-            let receipt = super::wire::validated_receipt_hash(&packet, &handler)
-                .await
-                .ok()
-                .flatten()
-                .map(DeliveryReceipt::new);
+            let receipt_hash = super::wire::validated_receipt_hash(&packet, &handler).await;
             let receipt_handler = handler.receipt_handler.clone();
-            (receipt, receipt_handler)
+            (receipt_hash, receipt_handler)
         };
+        let receipt = receipt_hash
+            .unwrap_or_else(|err| {
+                log::warn!(
+                    "[transport] proof crypto validation failed dst={}: {err:?}",
+                    packet.destination
+                );
+                None
+            })
+            .map(DeliveryReceipt::new);
 
         if let (Some(receipt), Some(handler)) = (receipt, receipt_handler) {
             handler.on_receipt(&receipt);

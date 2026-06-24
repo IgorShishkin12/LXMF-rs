@@ -217,7 +217,7 @@ fn bootstrap_strict_mode_panics_when_transport_is_disabled_for_enabled_interface
         &config_path,
         r#"
 interfaces = [
-  { type = "serial", enabled = true, name = "serial-main", device = "/dev/ttyUSB0", baud_rate = 115200 }
+  { type = "serial", enabled = true, name = "serial-main", device = "__definitely_not_a_device__", baud_rate = 115200 }
 ]
 "#,
     )
@@ -274,7 +274,7 @@ fn bootstrap_strict_mode_panics_on_tcp_client_preflight_connect_failure() {
         &config_path,
         r#"
 interfaces = [
-  { type = "tcp_client", enabled = true, name = "tcp-main", host = "203.0.113.1", port = 65535 }
+  { type = "tcp_client", enabled = true, name = "tcp-main", host = "127.0.0.1", port = 1 }
 ]
 "#,
     )

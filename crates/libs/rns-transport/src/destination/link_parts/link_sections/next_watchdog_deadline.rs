@@ -1,5 +1,4 @@
 impl Link {
-
     pub fn next_watchdog_deadline(&self, initiator: bool) -> Option<Instant> {
         match self.status {
             LinkStatus::Active => {
@@ -187,13 +186,14 @@ impl Link {
     /// link activates, and updated dynamically (e.g. after BLE ATT negotiation).
     /// Panics if called before the link is active (iface_mtu not yet set).
     pub fn mtu(&self) -> usize {
-        self.iface_mtu.expect("link mtu() called before interface MTU was set — link not yet active")
+        self.iface_mtu
+            .expect("link mtu() called before interface MTU was set — link not yet active")
     }
 
     /// Usable payload bytes per resource chunk on this link's local interface.
     pub fn packet_mdu(&self) -> usize {
         const OVERHEAD: usize = 2 + 1 + ADDRESS_HASH_SIZE * 2 + 1; // HEADER_MAXSIZE + IFAC_MIN
-        self.mtu().saturating_sub(OVERHEAD).min(PACKET_MDU).max(1)
+        self.mtu().saturating_sub(OVERHEAD).clamp(1, PACKET_MDU)
     }
 
     pub fn set_iface_mtu(&mut self, mtu: usize) {

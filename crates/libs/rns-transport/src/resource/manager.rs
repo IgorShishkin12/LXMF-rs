@@ -81,10 +81,20 @@ impl ResourceManager {
         let mut requests = Vec::new();
         let mut failed = Vec::new();
         for (hash, receiver) in self.incoming.iter_mut() {
-            if receiver.retry_due(now, self.retry_interval, self.retry_limit) {
-                let rtt = self.link_stats.get(&receiver.link_id)
-                    .map(|s| s.rtt)
-                    .unwrap_or(LinkStats::new().rtt);
+            let rtt = self.link_stats.get(&receiver.link_id)
+                .map(|s| s.rtt)
+                .unwrap_or(LinkStats::new().rtt);
+            // Scale the retry/failure interval to the link round-trip, mirroring
+            // the sender's advertisement retry (`min_retry_interval` in
+            // sender.rs). The seeded `rtt` equals the link's stale-detection
+            // window for slow links (e.g. LoRa ≈ 12 s); using 2× it gives the
+            // receiver a full round-trip to collect parts before counting a
+            // retry. Without this the flat `retry_limit × retry_interval`
+            // (16 × 2 s = 32 s) budget expires before one round-trip completes
+            // on slow links, failing the transfer with parts=0/N. On fast links
+            // `rtt` is small so this collapses to the flat `retry_interval`.
+            let eff_interval = self.retry_interval.max(rtt.saturating_mul(2));
+            if receiver.retry_due(now, eff_interval, self.retry_limit) {
                 let request = receiver.build_request(now, rtt);
                 if !request.requested_hashes.is_empty() || request.hashmap_exhausted {
                     receiver.mark_request();

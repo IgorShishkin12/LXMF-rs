@@ -107,6 +107,100 @@ fn resource_receiver_not_killed_by_timer_during_active_transfer() {
     );
 }
 
+/// A resource receiver on a slow, high-RTT link must not be declared
+/// `retry_limit_exhausted` before a single request→part round-trip can complete.
+///
+/// The inbound retry budget is `retry_limit × effective_interval`. With a flat
+/// `retry_interval` (2 s) the 16-retry budget collapses to ~32 s — shorter than
+/// one LoRa round-trip (~20-40 s) — so a large transfer fails with `parts=0/N`
+/// even though nothing is actually lost. The sender side already scales its
+/// advertisement retry to `stale_timeout × 2`; the receiver must scale the same
+/// way, using the seeded link RTT.
+///
+/// This drives 16 timer ticks at the *flat* 2 s cadence (the old budget) on a
+/// link seeded with a 12 s RTT. Before the fix the receiver is killed
+/// (`retry_limit_exhausted`); after the fix it survives because the effective
+/// interval stretches to ~24 s.
+#[test]
+fn resource_receiver_retry_budget_scales_with_link_rtt() {
+    let signer = PrivateIdentity::new_from_rand(OsRng);
+    let identity = *signer.as_identity();
+    let destination = DestinationDesc {
+        identity,
+        address_hash: identity.address_hash,
+        name: DestinationName::new("lxmf", "resource"),
+    };
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+    let mut link = Link::new(destination, tx);
+    link.request();
+
+    let mut manager = ResourceManager::new();
+
+    // 8 parts, but the advertisement only carries the first 2 map hashes (as on
+    // a low-MTU LoRa link, where a single segment holds ~2 hashes). The receiver
+    // therefore sees `hashmap_exhausted` and re-requests on every timer tick —
+    // the exact condition that exhausts the budget in the field.
+    const TOTAL_PARTS: usize = 8;
+    const ADVERTISED_HASHES: usize = 2;
+
+    let random_hash = [0xAB; RANDOM_HASH_SIZE];
+    let parts: Vec<Vec<u8>> = (0..TOTAL_PARTS).map(|i| vec![i as u8; PACKET_MDU]).collect();
+
+    let mut hashmap_bytes = Vec::with_capacity(ADVERTISED_HASHES * MAPHASH_LEN);
+    for part in parts.iter().take(ADVERTISED_HASHES) {
+        hashmap_bytes.extend_from_slice(&map_hash(part, &random_hash));
+    }
+
+    let transfer_size: u64 = (TOTAL_PARTS * PACKET_MDU) as u64;
+    let resource_hash = Hash::new_from_slice(&[0xCC; 32]);
+
+    let adv = ResourceAdvertisement {
+        transfer_size,
+        data_size: transfer_size,
+        parts: TOTAL_PARTS as u32,
+        hash: resource_hash,
+        random_hash,
+        original_hash: resource_hash,
+        segment_index: 1,
+        total_segments: 1,
+        request_id: None,
+        flags: 0,
+        hashmap: hashmap_bytes,
+    };
+
+    // Seed a slow-link RTT (LoRa stale_timeout ≈ 12 s) before the advertisement
+    // so the receiver inherits it instead of the 500 ms default.
+    let link_rtt = Duration::from_secs(12);
+    manager.link_stats.insert(*link.id(), LinkStats::new_with_rtt(link_rtt));
+
+    let adv_packet = resource_packet(
+        PacketContext::ResourceAdvrtisement,
+        &adv.pack().expect("pack advertisement"),
+        *link.id(),
+    );
+    let _ = manager.handle_packet(&adv_packet, &mut link);
+    assert!(manager.incoming.contains_key(&resource_hash), "receiver created after advertisement");
+
+    // Drive the full default budget (retry_limit ticks at the flat 2 s cadence ≈
+    // 32 s of simulated time). No parts ever arrive.
+    let base = Instant::now();
+    for k in 1..=u64::from(DEFAULT_RESOURCE_MAX_RETRIES) {
+        manager.retry_requests(base + Duration::from_secs(2 * k));
+    }
+
+    assert!(
+        manager.incoming.contains_key(&resource_hash),
+        "receiver on a high-RTT link must survive the flat {}s budget",
+        2 * u64::from(DEFAULT_RESOURCE_MAX_RETRIES),
+    );
+    assert!(
+        manager.incoming[&resource_hash].retry_count < manager.retry_limit,
+        "retry_count ({}) must not reach retry_limit ({}) within one link round-trip",
+        manager.incoming[&resource_hash].retry_count,
+        manager.retry_limit,
+    );
+}
+
 #[test]
 fn resource_advertisements_use_reference_advertisement_retry_budget() {
     let signer = PrivateIdentity::new_from_rand(OsRng);

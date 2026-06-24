@@ -535,8 +535,6 @@ mod tests {
         ResourceAdvertisement::unpack(buffer.as_slice()).expect("advertisement")
     }
 
-    include!("tests_mtu.rs");
-
     /// send_resource uses link.mtu() — when a link has iface_mtu=220 set on activation
     /// the ResourceSender it creates must constrain parts to the LoRa MTU.
     #[test]

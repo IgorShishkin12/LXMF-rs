@@ -107,7 +107,7 @@ async fn record_probe_status_commands_with_startup_timeout(
                     (result, fatal)
                 };
                 match result {
-                    (Ok(true), _) => log::debug!(
+                    (Ok(true), _) => log::trace!(
                         "recorded LoRa RNode command response command=0x{:02x}",
                         command.command
                     ),

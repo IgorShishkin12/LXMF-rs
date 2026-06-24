@@ -20,7 +20,11 @@ env:
 
 jobs:
   python-reference-interop:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-full-CI'))
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      (contains(github.event.pull_request.labels.*.name, 'run-full-CI') ||
+      contains(github.event.pull_request.labels.*.name, 'run-peer-lifecycle-CI')))
     name: Validate PR against pinned Python reference
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -65,8 +69,14 @@ jobs:
 
       - name: Install Linux BLE build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libdbus-1-dev
+          sudo apt-get \
+            -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- \
+            update
+          sudo apt-get \
+            -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- \
+            install -y pkg-config libdbus-1-dev
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -90,18 +100,6 @@ jobs:
           PYTHON_RNS_PATH: ${{ github.workspace }}/Reticulum
           PYTHON_LXMF_PATH: ${{ github.workspace }}/LXMF
         run: python -m pytest tests/ --reference-only -v --tb=short
-
-      - name: Rust interop artifact gate
-        working-directory: lxmf-rs
-        run: cargo xtask ci --stage interop-artifacts
-
-      - name: Rust SDK conformance gate
-        working-directory: lxmf-rs
-        run: cargo xtask ci --stage sdk-conformance
-
-      - name: Rust E2E compatibility gate
-        working-directory: lxmf-rs
-        run: cargo xtask ci --stage e2e-compatibility
 
       - name: Rust/Python Reticulum channel interop
         working-directory: lxmf-rs

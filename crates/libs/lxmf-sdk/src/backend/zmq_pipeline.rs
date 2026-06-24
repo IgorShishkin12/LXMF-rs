@@ -1,6 +1,12 @@
+use crate::app::{Envelope, EnvelopeResponse, OperationRegistry};
 use crate::backend::SdkBackend;
 use crate::capability::{NegotiationRequest, NegotiationResponse};
-use crate::domain::{PresenceListRequest, PresenceListResult};
+use crate::domain::{
+    ContactListRequest, ContactListResult, ContactRecord, ContactUpdateRequest,
+    IdentityAnnounceRequest, IdentityAnnounceResult, IdentityBootstrapRequest, IdentityBundle,
+    IdentityImportRequest, IdentityRef, IdentityResolveRequest, PeerConnectionRequest,
+    PeerConnectionResult, PresenceListRequest, PresenceListResult,
+};
 use crate::error::{code, ErrorCategory, SdkError};
 use crate::event::{EventBatch, EventCursor, SdkEvent, Severity};
 use crate::types::{
@@ -9,45 +15,58 @@ use crate::types::{
 };
 use hmac::{Hmac, Mac};
 use rns_rpc::e2e_harness::{build_rpc_frame, parse_rpc_frame};
-use rns_rpc::rpc::zmq::{self, ZmqRpcAuthMetadata, ZmqRpcEnvelope, ZmqRpcEnvelopeKind};
+use rns_rpc::rpc::zmq::{self, ZmqRpcAuthMetadata, ZmqRpcEnvelope};
 use rns_rpc::RpcError;
 use serde_json::{json, Value as JsonValue};
 use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
-use zeromq::{PullSocket, PushSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
 
+#[path = "zmq_pipeline/batch.rs"]
+mod batch;
 #[path = "zmq_pipeline/config.rs"]
 mod config;
+#[path = "zmq_pipeline/destination.rs"]
+mod destination;
+#[path = "zmq_pipeline/discovery.rs"]
+mod discovery;
+#[path = "zmq_pipeline/history.rs"]
+mod history;
+#[path = "zmq_pipeline/identity.rs"]
+mod identity;
 #[path = "zmq_pipeline/negotiation.rs"]
 mod negotiation;
 #[path = "zmq_pipeline/parsing.rs"]
 mod parsing;
+#[path = "zmq_pipeline/peer.rs"]
+mod peer;
+#[path = "zmq_pipeline/propagation.rs"]
+mod propagation;
 #[path = "zmq_pipeline/send.rs"]
 mod send;
+#[path = "zmq_pipeline/transport.rs"]
+mod transport;
+#[path = "zmq_pipeline/workflow.rs"]
+mod workflow;
 
 #[cfg(test)]
-#[path = "zmq_pipeline/tests.rs"]
+#[path = "zmq_pipeline/tests/mod.rs"]
 mod tests;
 
 pub use config::{ZmqEndpointRole, ZmqPipelineBackendConfig, ZmqPipelineTokenAuth};
 use negotiation::new_session_id;
-
+use transport::ZmqPipelineTransport;
 pub struct ZmqPipelineBackendClient {
     config: ZmqPipelineBackendConfig,
     session_id: String,
     next_request_id: AtomicU64,
+    negotiated_capabilities: RwLock<Vec<String>>,
     runtime: Runtime,
     transport: tokio::sync::Mutex<Option<ZmqPipelineTransport>>,
 }
-
-struct ZmqPipelineTransport {
-    command: PushSocket,
-    responses: PullSocket,
-}
-
 impl ZmqPipelineBackendClient {
     pub fn new(config: ZmqPipelineBackendConfig) -> Result<Self, SdkError> {
         config.validate()?;
@@ -57,6 +76,7 @@ impl ZmqPipelineBackendClient {
             config,
             session_id: new_session_id(),
             next_request_id: AtomicU64::new(1),
+            negotiated_capabilities: RwLock::new(Vec::new()),
             runtime,
             transport: tokio::sync::Mutex::new(None),
         })
@@ -65,9 +85,18 @@ impl ZmqPipelineBackendClient {
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
-
     fn next_request_id(&self) -> u64 {
         self.next_request_id.fetch_add(1, Ordering::Relaxed)
+    }
+    fn next_message_id(&self) -> String {
+        format!("sdk-zmq-{}-{}", self.session_id, self.next_request_id())
+    }
+    fn has_capability(&self, capability_id: &str) -> bool {
+        self.negotiated_capabilities
+            .read()
+            .expect("negotiated_capabilities rwlock poisoned")
+            .iter()
+            .any(|capability| capability == capability_id)
     }
 
     fn call_rpc(&self, method: &str, params: Option<JsonValue>) -> Result<JsonValue, SdkError> {
@@ -99,54 +128,6 @@ impl ZmqPipelineBackendClient {
         Ok(rpc_response.result.unwrap_or(JsonValue::Null))
     }
 
-    async fn send_and_recv(
-        &self,
-        encoded: Vec<u8>,
-        request_id: u64,
-    ) -> Result<ZmqRpcEnvelope, SdkError> {
-        let mut transport = self.transport.lock().await;
-        if transport.is_none() {
-            *transport = Some(ZmqPipelineTransport::connect(&self.config).await?);
-        }
-        let transport = transport
-            .as_mut()
-            .ok_or_else(|| sdk_error(ErrorCategory::Internal, "missing zmq transport"))?;
-
-        transport
-            .command
-            .send(ZmqMessage::from(encoded))
-            .await
-            .map_err(|err| sdk_error(ErrorCategory::Transport, err.to_string()))?;
-
-        let deadline = tokio::time::sleep(self.config.request_timeout);
-        tokio::pin!(deadline);
-        loop {
-            tokio::select! {
-                _ = &mut deadline => {
-                    return Err(SdkError::new(
-                        "SDK_TRANSPORT_ZMQ_TIMEOUT",
-                        ErrorCategory::Timeout,
-                        "zmq rpc request timed out waiting for correlated response",
-                    ));
-                }
-                message = transport.responses.recv() => {
-                    let bytes = Vec::<u8>::try_from(message.map_err(|err| {
-                        sdk_error(ErrorCategory::Transport, err.to_string())
-                    })?)
-                    .map_err(|err| sdk_error(ErrorCategory::Transport, err.to_string()))?;
-                    let envelope = zmq::decode_envelope(&bytes)
-                        .map_err(|err| sdk_error(ErrorCategory::Transport, err.to_string()))?;
-                    if envelope.kind == ZmqRpcEnvelopeKind::Response
-                        && envelope.session_id == self.session_id
-                        && envelope.request_id == request_id
-                    {
-                        return Ok(envelope);
-                    }
-                }
-            }
-        }
-    }
-
     fn auth_metadata_for_request(&self, request_id: u64) -> Option<ZmqRpcAuthMetadata> {
         let auth = self.config.token_auth.as_ref()?;
         let now = SystemTime::now()
@@ -167,17 +148,6 @@ impl ZmqPipelineBackendClient {
             scheme: "bearer".to_string(),
             value: format!("{};sig={}", payload, sig),
         })
-    }
-}
-
-impl ZmqPipelineTransport {
-    async fn connect(config: &ZmqPipelineBackendConfig) -> Result<Self, SdkError> {
-        let mut command = PushSocket::new();
-        apply_role(&mut command, config.command_role, &config.command_endpoint).await?;
-        let mut responses = PullSocket::new();
-        apply_role(&mut responses, config.response_role, &config.response_endpoint).await?;
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        Ok(Self { command, responses })
     }
 }
 
@@ -215,6 +185,8 @@ impl SdkBackend for ZmqPipelineBackendClient {
                     "rpc response missing effective_limits",
                 )
             })?)?;
+        *self.negotiated_capabilities.write().expect("negotiated_capabilities rwlock poisoned") =
+            effective_capabilities.clone();
         Ok(NegotiationResponse {
             runtime_id: Self::parse_required_string(&result, "runtime_id")?,
             active_contract_version: Self::parse_required_u16(&result, "active_contract_version")?,
@@ -232,10 +204,8 @@ impl SdkBackend for ZmqPipelineBackendClient {
     }
 
     fn send(&self, req: SendRequest) -> Result<MessageId, SdkError> {
-        let value = self.call_rpc(
-            "sdk_send_v2",
-            Some(send::send_params(req, format!("sdk-zmq-{}", self.next_request_id()))),
-        )?;
+        let value =
+            self.call_rpc("sdk_send_v2", Some(send::send_params(req, self.next_message_id())))?;
         Ok(MessageId(Self::parse_required_string(&value, "message_id")?))
     }
 
@@ -254,22 +224,26 @@ impl SdkBackend for ZmqPipelineBackendClient {
         }
         let state =
             Self::parse_delivery_state(record.get("receipt_status").and_then(JsonValue::as_str));
-        let terminal = matches!(
-            state,
+        let terminal = match state {
+            DeliveryState::Sent => !self.has_capability("sdk.capability.receipt_terminality"),
             DeliveryState::Delivered
-                | DeliveryState::Failed
-                | DeliveryState::Cancelled
-                | DeliveryState::Expired
-                | DeliveryState::Rejected
-        );
+            | DeliveryState::Failed
+            | DeliveryState::Cancelled
+            | DeliveryState::Expired
+            | DeliveryState::Rejected => true,
+            DeliveryState::Queued
+            | DeliveryState::Dispatching
+            | DeliveryState::InFlight
+            | DeliveryState::Unknown => false,
+        };
         let timestamp = record.get("timestamp").and_then(JsonValue::as_i64).unwrap_or(0_i64);
         Ok(Some(DeliverySnapshot {
             message_id: id,
             state,
             terminal,
             last_updated_ms: u64::try_from(timestamp.max(0)).unwrap_or(0).saturating_mul(1000),
-            attempts: 0,
-            reason_code: None,
+            attempts: Self::parse_optional_u32(record, "attempts")?.unwrap_or(0),
+            reason_code: Self::parse_optional_string(record, "reason_code")?,
         }))
     }
 
@@ -360,6 +334,13 @@ impl SdkBackend for ZmqPipelineBackendClient {
         Ok(Self::parse_ack(&result))
     }
 
+    fn identity_announce(
+        &self,
+        req: IdentityAnnounceRequest,
+    ) -> Result<IdentityAnnounceResult, SdkError> {
+        ZmqPipelineBackendClient::identity_announce(self, req)
+    }
+
     fn identity_presence_list(
         &self,
         req: PresenceListRequest,
@@ -370,7 +351,92 @@ impl SdkBackend for ZmqPipelineBackendClient {
         let result = self.call_rpc("sdk_identity_presence_list_v2", Some(params))?;
         Self::decode_field_or_root(&result, "presence_list", "identity_presence_list response")
     }
+    fn identity_list(&self) -> Result<Vec<IdentityBundle>, SdkError> {
+        let result = self.call_rpc("sdk_identity_list_v2", Some(json!({})))?;
+        Self::decode_field_or_root(&result, "identities", "identity_list response")
+    }
+    fn identity_activate(&self, identity: IdentityRef) -> Result<Ack, SdkError> {
+        let result =
+            self.call_rpc("sdk_identity_activate_v2", Some(json!({ "identity": identity.0 })))?;
+        Ok(Self::parse_ack(&result))
+    }
+    fn identity_import(&self, req: IdentityImportRequest) -> Result<IdentityBundle, SdkError> {
+        let params = serde_json::to_value(req).map_err(|err| {
+            SdkError::new(code::INTERNAL, ErrorCategory::Internal, err.to_string())
+        })?;
+        let result = self.call_rpc("sdk_identity_import_v2", Some(params))?;
+        Self::decode_field_or_root(&result, "identity", "identity_import response")
+    }
+    fn identity_export(&self, identity: IdentityRef) -> Result<IdentityImportRequest, SdkError> {
+        let result =
+            self.call_rpc("sdk_identity_export_v2", Some(json!({ "identity": identity.0 })))?;
+        Self::decode_field_or_root(&result, "bundle", "identity_export response")
+    }
 
+    fn identity_resolve(
+        &self,
+        req: IdentityResolveRequest,
+    ) -> Result<Option<IdentityRef>, SdkError> {
+        let params = serde_json::to_value(req).map_err(|err| {
+            SdkError::new(code::INTERNAL, ErrorCategory::Internal, err.to_string())
+        })?;
+        let result = self.call_rpc("sdk_identity_resolve_v2", Some(params))?;
+        if result.is_null() || result.get("identity").is_some_and(JsonValue::is_null) {
+            return Ok(None);
+        }
+        let value = result.get("identity").cloned().unwrap_or(result);
+        Self::decode_value(value, "identity_resolve response").map(Some)
+    }
+    fn identity_contact_update(
+        &self,
+        req: ContactUpdateRequest,
+    ) -> Result<ContactRecord, SdkError> {
+        let params = serde_json::to_value(req).map_err(|err| {
+            SdkError::new(code::INTERNAL, ErrorCategory::Internal, err.to_string())
+        })?;
+        let result = self.call_rpc("sdk_identity_contact_update_v2", Some(params))?;
+        Self::decode_field_or_root(&result, "contact", "identity_contact_update response")
+    }
+    fn identity_contact_list(
+        &self,
+        req: ContactListRequest,
+    ) -> Result<ContactListResult, SdkError> {
+        let params = serde_json::to_value(req).map_err(|err| {
+            SdkError::new(code::INTERNAL, ErrorCategory::Internal, err.to_string())
+        })?;
+        let result = self.call_rpc("sdk_identity_contact_list_v2", Some(params))?;
+        Self::decode_field_or_root(&result, "contact_list", "identity_contact_list response")
+    }
+    fn identity_bootstrap(&self, req: IdentityBootstrapRequest) -> Result<ContactRecord, SdkError> {
+        let params = serde_json::to_value(req).map_err(|err| {
+            SdkError::new(code::INTERNAL, ErrorCategory::Internal, err.to_string())
+        })?;
+        let result = self.call_rpc("sdk_identity_bootstrap_v2", Some(params))?;
+        Self::decode_field_or_root(&result, "contact", "identity_bootstrap response")
+    }
+    fn peer_connect(&self, req: PeerConnectionRequest) -> Result<PeerConnectionResult, SdkError> {
+        ZmqPipelineBackendClient::peer_connect(self, req)
+    }
+    fn peer_disconnect(
+        &self,
+        req: PeerConnectionRequest,
+    ) -> Result<PeerConnectionResult, SdkError> {
+        ZmqPipelineBackendClient::peer_disconnect(self, req)
+    }
+    fn peer_reconnect(&self, req: PeerConnectionRequest) -> Result<PeerConnectionResult, SdkError> {
+        ZmqPipelineBackendClient::peer_reconnect(self, req)
+    }
+    fn operation_registry(&self) -> Result<OperationRegistry, SdkError> {
+        let result = self.call_rpc("sdk_operation_registry_v2", Some(json!({})))?;
+        Self::decode_field_or_root(&result, "registry", "operation_registry response")
+    }
+    fn envelope_execute(&self, envelope: Envelope) -> Result<EnvelopeResponse, SdkError> {
+        let params = serde_json::to_value(envelope).map_err(|err| {
+            SdkError::new(code::INTERNAL, ErrorCategory::Internal, err.to_string())
+        })?;
+        let result = self.call_rpc("sdk_envelope_execute_v2", Some(params))?;
+        Self::decode_field_or_root(&result, "response", "envelope_execute response")
+    }
     fn snapshot(&self) -> Result<RuntimeSnapshot, SdkError> {
         let result = self.call_rpc("sdk_snapshot_v2", Some(json!({ "include_counts": true })))?;
         Ok(RuntimeSnapshot {
@@ -401,24 +467,6 @@ impl SdkBackend for ZmqPipelineBackendClient {
             accepted: result.get("accepted").and_then(JsonValue::as_bool).unwrap_or(false),
             revision: None,
         })
-    }
-}
-
-async fn apply_role<S>(
-    socket: &mut S,
-    role: ZmqEndpointRole,
-    endpoint: &str,
-) -> Result<(), SdkError>
-where
-    S: Socket,
-{
-    match role {
-        ZmqEndpointRole::Bind => socket.bind(endpoint).await.map(|_| ()).map_err(|err| {
-            sdk_error(ErrorCategory::Transport, format!("zmq bind {} failed: {}", endpoint, err))
-        }),
-        ZmqEndpointRole::Connect => socket.connect(endpoint).await.map_err(|err| {
-            sdk_error(ErrorCategory::Transport, format!("zmq connect {} failed: {}", endpoint, err))
-        }),
     }
 }
 

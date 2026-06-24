@@ -1,5 +1,7 @@
 use reticulum_daemon::receipt_bridge::ReceiptEvent;
 
+use crate::bridge::emit_receipt_event;
+
 use rns_rpc::{RpcDaemon, RpcRequest};
 
 use rns_transport::destination::link::{Link, LinkEvent};
@@ -62,16 +64,56 @@ pub(super) fn spawn_inbound_worker(
                                     .await;
                                 }
                                 InboundLxmfDestination::Propagation => {
+                                    if complete.is_request {
+                                        match resource_request_id(&complete.request_id) {
+                                            Some(request_id) => {
+                                                if let Err(error) =
+                                                    control::handle_resource_control_request(
+                                                        daemon.as_ref(),
+                                                        transport.as_ref(),
+                                                        &resource_control,
+                                                        &event.link_id,
+                                                        &complete.data,
+                                                        request_id,
+                                                        true,
+                                                    )
+                                                    .await
+                                                {
+                                                    log::error!(
+                                                        "[daemon-control] failed to handle propagation resource request link={} error={}",
+                                                        event.link_id,
+                                                        error
+                                                    );
+                                                }
+                                            }
+                                            None => {
+                                                log::warn!(
+                                                    "[daemon-control] ignoring propagation resource request with invalid request id link={}",
+                                                    event.link_id
+                                                );
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    if complete.is_response {
+                                        continue;
+                                    }
                                     let remote_peer = remote_propagation_peer_for_link(
                                         transport.as_ref(),
                                         &event.link_id,
                                     )
                                     .await;
-                                    let peer_link_validated = resource_control
-                                        .validated_peer_links
-                                        .lock()
-                                        .ok()
-                                        .is_some_and(|guard| guard.contains(&event.link_id));
+                                    let peer_link_validated =
+                                        match resource_control.validated_peer_links.lock() {
+                                            Ok(guard) => guard.contains(&event.link_id),
+                                            Err(err) => {
+                                                log::warn!(
+                                                    "[daemon-rx] failed to read validated peer links for link={}: {err}",
+                                                    hex::encode(event.link_id.as_slice())
+                                                );
+                                                false
+                                            }
+                                        };
                                     if let Err(error) =
                                         propagation::ingest_propagation_resource_from_peer(
                                             daemon.as_ref(),
@@ -116,11 +158,31 @@ pub(super) fn spawn_inbound_worker(
                             resource_hash_hex.as_str(),
                         );
                     }
+                    ResourceEventKind::InboundFailed(failure) => {
+                        log::warn!(
+                            "[daemon-rx] inbound resource failed link={} hash={} reason={} received={}/{}",
+                            event.link_id,
+                            event.hash,
+                            failure.reason,
+                            failure.progress.received_parts,
+                            failure.progress.total_parts
+                        );
+                    }
                     ResourceEventKind::Progress(_) => {}
                 }
             }
         }
     });
+}
+
+fn resource_request_id(request_id: &Option<Vec<u8>>) -> Option<[u8; 16]> {
+    let bytes = request_id.as_ref()?;
+    if bytes.len() != 16 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    out.copy_from_slice(bytes.as_slice());
+    Some(out)
 }
 
 async fn remote_propagation_peer_for_link(
@@ -158,7 +220,7 @@ fn handle_outbound_resource_completion(
         take_outbound_resource_tracking(outbound_resource_map, resource_hash_hex.as_str())
     {
         daemon.record_outbound_peer_sent(&tracking.peer, tracking.bytes);
-        let _ = receipt_tx.try_send(ReceiptEvent {
+        emit_receipt_event(receipt_tx, ReceiptEvent {
             message_id: tracking.message_id,
             status: tracking.sent_status,
         });
@@ -176,7 +238,7 @@ fn handle_outbound_resource_failure(
         take_outbound_resource_tracking(outbound_resource_map, resource_hash_hex.as_str())
     {
         daemon.record_outbound_peer_activity(&tracking.peer, tracking.bytes, false);
-        let _ = receipt_tx.try_send(ReceiptEvent {
+        emit_receipt_event(receipt_tx, ReceiptEvent {
             message_id: tracking.message_id,
             status: "failed: resource transfer timed out".to_string(),
         });
@@ -221,6 +283,13 @@ fn spawn_packet_inbound_worker(
                         }
                         continue;
                     };
+
+                    if routing::should_skip_resolved_control_payload(
+                        resolved_destination,
+                        event.context,
+                    ) {
+                        continue;
+                    }
 
                     delivery_events::log_resolved_packet(
                         &raw_destination_hex,

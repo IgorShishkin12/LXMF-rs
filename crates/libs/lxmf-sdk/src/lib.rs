@@ -19,7 +19,8 @@ pub use api::{LxmfSdk, LxmfSdkAsync, LxmfSdkManualTick};
 // Stability class: experimental (capability-gated extension traits)
 pub use api::{
     LxmfSdkAttachments, LxmfSdkGroupDelivery, LxmfSdkIdentity, LxmfSdkMarkers, LxmfSdkOperations,
-    LxmfSdkPaper, LxmfSdkRemoteCommands, LxmfSdkTelemetry, LxmfSdkTopics, LxmfSdkVoiceSignaling,
+    LxmfSdkPaper, LxmfSdkPeerLifecycle, LxmfSdkRemoteCommands, LxmfSdkTelemetry, LxmfSdkTopics,
+    LxmfSdkVoiceSignaling,
 };
 // Stability class: internal (backend composition surface)
 pub use backend::mobile_ble::{
@@ -57,15 +58,28 @@ pub use domain::{
     AttachmentListResult, AttachmentMeta, AttachmentStoreRequest, AttachmentUploadChunkAck,
     AttachmentUploadChunkRequest, AttachmentUploadCommitRequest, AttachmentUploadId,
     AttachmentUploadSession, AttachmentUploadStartRequest, ContactListRequest, ContactListResult,
-    ContactRecord, ContactUpdateRequest, GeoPoint, IdentityBootstrapRequest, IdentityBundle,
-    IdentityImportRequest, IdentityRef, IdentityResolveRequest, MarkerCreateRequest,
-    MarkerDeleteRequest, MarkerId, MarkerListRequest, MarkerListResult, MarkerRecord,
-    MarkerUpdatePositionRequest, PaperMessageEnvelope, PresenceListRequest, PresenceListResult,
-    PresenceRecord, RemoteCommandRequest, RemoteCommandResponse, RemoteCommandSession,
-    RemoteCommandSessionListRequest, RemoteCommandSessionListResult, TelemetryPoint,
-    TelemetryQuery, TopicCreateRequest, TopicId, TopicListRequest, TopicListResult, TopicPath,
-    TopicPublishRequest, TopicRecord, TopicSubscriptionRequest, TrustLevel, VoiceSessionId,
-    VoiceSessionOpenRequest, VoiceSessionState, VoiceSessionUpdateRequest,
+    ContactRecord, ContactUpdateRequest, GeoPoint, IdentityAnnounceRequest, IdentityAnnounceResult,
+    IdentityBootstrapRequest, IdentityBundle, IdentityImportRequest, IdentityRef,
+    IdentityResolveRequest, MarkerCreateRequest, MarkerDeleteRequest, MarkerId, MarkerListRequest,
+    MarkerListResult, MarkerRecord, MarkerUpdatePositionRequest, PaperMessageEnvelope,
+    PeerConnectionRequest, PeerConnectionResult, PeerConnectionState, PresenceListRequest,
+    PresenceListResult, PresenceRecord, PropagationAcknowledgeSyncRequest,
+    PropagationAcknowledgeSyncResult, PropagationDeliveryPolicyRequest,
+    PropagationDeliveryPolicyResult, PropagationDeliveryPolicyState, PropagationEnableRequest,
+    PropagationFetchRequest, PropagationFetchResult, PropagationIngestRequest,
+    PropagationIngestResult, PropagationNodeConfig, PropagationNodeListResult,
+    PropagationNodeRecord, PropagationNodeSelectionResult, PropagationNodeSelectionState,
+    PropagationNodeSetRequest, PropagationPeerMaintenanceResult, PropagationPeerSyncRequest,
+    PropagationPeerSyncResult, PropagationRecoveryStateResult, PropagationRemotePeerRequest,
+    PropagationRemoteRequest, PropagationRemoteStatusResult, PropagationRemoteStatusState,
+    PropagationRemoteSyncResult, PropagationRemoteTransferResult, PropagationRemoteTransferState,
+    PropagationRemoteUnpeerResult, PropagationStatusResult, RemoteCommandRequest,
+    RemoteCommandResponse, RemoteCommandSession, RemoteCommandSessionListRequest,
+    RemoteCommandSessionListResult, TelemetryPoint, TelemetryQuery, TopicCreateRequest, TopicId,
+    TopicListRequest, TopicListResult, TopicPath, TopicPublishRequest, TopicRecord,
+    TopicSubscriptionRequest, TrustLevel, VoiceSessionId, VoiceSessionOpenRequest,
+    VoiceSessionState, VoiceSessionUpdateRequest, WorkflowPeerReadyRequest,
+    WorkflowPeerReadyResult,
 };
 pub use error::{code as error_code, ErrorCategory, ErrorDetails, SdkError};
 // Stability class: stable
@@ -76,9 +90,10 @@ pub use event::{
 pub use lifecycle::{Lifecycle, SdkMethod};
 #[cfg(feature = "std")]
 pub use messaging::{
-    AnnounceRecord, ConversationRecord, MessageDirection, MessageMethod, MessageRecord,
-    MessageState, MessagingStore, PeerRecord, PeerState, SendMessageRequest, StoredOutboundMessage,
-    SyncPhase, SyncStatus,
+    AnnounceRecord, ConversationListPage, ConversationListRequest, ConversationRecord,
+    MessageDirection, MessageHistoryListRequest, MessageHistoryPage, MessageHistoryRecord,
+    MessageMethod, MessageRecord, MessageState, MessagingStore, PeerRecord, PeerState,
+    SendMessageRequest, StoredOutboundMessage, SyncPhase, SyncStatus,
 };
 pub use profiles::{
     default_effective_limits, default_memory_budget, required_capabilities, supports_capability,
@@ -86,7 +101,8 @@ pub use profiles::{
 };
 // Stability class: stable
 pub use types::{
-    Ack, AuthMode, BindMode, CancelResult, ClientHandle, ConfigPatch, DeliverySnapshot,
+    Ack, AuthMode, BatchSendItem, BatchSendItemError, BatchSendItemResult, BatchSendRequest,
+    BatchSendResult, BindMode, CancelResult, ClientHandle, ConfigPatch, DeliverySnapshot,
     DeliveryState, EventSinkConfig, EventSinkKind, EventSinkPatch, EventStreamConfig,
     GroupRecipientState, GroupSendOutcome, GroupSendRequest, GroupSendResult, MessageId,
     OverflowPolicy, Profile, RedactionConfig, RedactionTransform, RpcBackendConfig,

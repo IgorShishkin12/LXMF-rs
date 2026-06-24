@@ -165,6 +165,125 @@ pub struct GroupSendResult {
     pub failed_count: usize,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
+pub struct BatchSendRequest {
+    pub batch_id: String,
+    pub source: String,
+    pub messages: Vec<BatchSendItem>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
+pub struct BatchSendItem {
+    pub id: String,
+    pub destination: String,
+    pub payload: JsonValue,
+    #[serde(default)]
+    pub delivery_method: Option<String>,
+    #[serde(default)]
+    pub stamp_cost: Option<u32>,
+    #[serde(default)]
+    pub include_ticket: Option<bool>,
+    #[serde(default)]
+    pub try_propagation_on_fail: Option<bool>,
+    pub idempotency_key: Option<String>,
+    pub ttl_ms: Option<u64>,
+    pub correlation_id: Option<String>,
+    #[serde(default)]
+    pub extensions: BTreeMap<String, JsonValue>,
+}
+
+impl BatchSendItem {
+    pub fn new(id: impl Into<String>, destination: impl Into<String>, payload: JsonValue) -> Self {
+        Self {
+            id: id.into(),
+            destination: destination.into(),
+            payload,
+            delivery_method: None,
+            stamp_cost: None,
+            include_ticket: None,
+            try_propagation_on_fail: None,
+            idempotency_key: None,
+            ttl_ms: None,
+            correlation_id: None,
+            extensions: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_idempotency_key(mut self, key: impl Into<String>) -> Self {
+        self.idempotency_key = Some(key.into());
+        self
+    }
+
+    pub fn with_ttl_ms(mut self, ttl_ms: u64) -> Self {
+        self.ttl_ms = Some(ttl_ms);
+        self
+    }
+
+    pub fn with_correlation_id(mut self, correlation_id: impl Into<String>) -> Self {
+        self.correlation_id = Some(correlation_id.into());
+        self
+    }
+
+    pub fn with_extension(mut self, key: impl Into<String>, value: JsonValue) -> Self {
+        self.extensions.insert(key.into(), value);
+        self
+    }
+
+    pub fn with_delivery_method(mut self, method: impl Into<String>) -> Self {
+        self.delivery_method = Some(method.into());
+        self
+    }
+
+    pub fn with_stamp_cost(mut self, stamp_cost: u32) -> Self {
+        self.stamp_cost = Some(stamp_cost);
+        self
+    }
+
+    pub fn with_include_ticket(mut self, include_ticket: bool) -> Self {
+        self.include_ticket = Some(include_ticket);
+        self
+    }
+
+    pub fn with_try_propagation_on_fail(mut self, try_propagation_on_fail: bool) -> Self {
+        self.try_propagation_on_fail = Some(try_propagation_on_fail);
+        self
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
+pub struct BatchSendResult {
+    pub batch_id: String,
+    pub accepted_count: usize,
+    pub rejected_count: usize,
+    pub results: Vec<BatchSendItemResult>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
+pub struct BatchSendItemResult {
+    pub id: String,
+    #[serde(default)]
+    pub message_id: Option<String>,
+    pub accepted: bool,
+    #[serde(default)]
+    pub error: Option<BatchSendItemError>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
+pub struct BatchSendItemError {
+    pub code: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub retryable: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct MessageId(pub String);
 

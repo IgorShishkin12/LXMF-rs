@@ -29,9 +29,11 @@ unless remote token auth is already configured in the persisted SDK runtime conf
 mTLS client authentication is configured at startup with `--rpc-tls-client-ca`.
 Use loopback TCP only for local development.
 
-## Experimental ZeroMQ Backend
+## ZeroMQ Backend
 
-The ZeroMQ backend is parallel and opt-in:
+The ZeroMQ backend is parallel and opt-in. It is the preferred SDK transport
+for high-throughput local integrations and the REM/RCH 0.5.0 compatibility
+track:
 
 ```toml
 lxmf-sdk = { path = "crates/libs/lxmf-sdk", features = ["zmq-pipeline-backend"] }
@@ -50,6 +52,36 @@ let client = Client::new(backend);
 Use loopback endpoints for local testing. Remote ZeroMQ endpoints require explicit token auth; the
 backend rejects remote endpoints without it. `poll_events` remains the authoritative event recovery
 API even when ZeroMQ event wakeups are enabled.
+
+The typed `ZmqPipelineBackendClient` path covers the core lifecycle and
+delivery methods plus identity list/activate/import/export, identity announce,
+presence list, identity resolve, contact update/list, identity bootstrap,
+typed peer directory through `ZmqPipelineBackendClient::peer_directory`,
+typed peer-ready setup through `ZmqPipelineBackendClient::workflow_peer_ready`,
+operation registry, envelope execution, and typed durable direct-chat history
+through `ZmqPipelineBackendClient::list_message_history`. History requests use
+the `app.message.history.list` SDK envelope path and preserve one-to-one
+`peer_id`/`conversation_id` filters, `include_receipts`, links in message
+bodies, basic LXMF fields, and restart pagination cursors. Peer directory
+merges saved contacts and announce-derived presence over typed ZeroMQ SDK calls,
+preserving display names, callsigns, REM capability flags, and RCH announce-slot
+metadata. Peer-ready setup preserves display names, callsigns, and capability
+metadata while optionally announcing before use. Runtime destination
+queries can use `ZmqPipelineBackendClient::local_delivery_destination_hash`;
+operation-driven clients can still use `app.delivery.destination_hash` through
+SDK envelope execution. Burst sends can use
+`ZmqPipelineBackendClient::send_batch` for typed ordered per-message
+acceptance and rejection results; operation-driven clients can use
+`app.delivery.send_batch` through SDK envelope execution. Direct-chat
+cancellation can use either `sdk_cancel_message_v2` via
+`ZmqPipelineBackendClient::cancel` or `app.delivery.cancel` through SDK
+envelope execution, preserving `Accepted`, `AlreadyTerminal`, `NotFound`, and
+`TooLateToCancel` results. Delivery status follows negotiated receipt semantics
+on the ZeroMQ path: `sent` is terminal until
+`sdk.capability.receipt_terminality` is negotiated, then `delivered` is the
+terminal receipt state. Status snapshots also preserve daemon-reported
+retry-attempt counts and reason codes so REM/RCH can surface restart/retry
+state without raw RPC status calls.
 
 Run the example client:
 

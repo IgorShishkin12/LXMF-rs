@@ -18,14 +18,46 @@ impl RpcDaemon {
                         parse_timestamp_id_cursor(parsed.cursor.as_deref()).unwrap_or((None, None))
                     }
                 };
+                let include_receipts = parsed.include_receipts.unwrap_or(true);
+                let peer_id =
+                    parsed.peer_id.as_deref().map(str::trim).filter(|value| !value.is_empty());
+                let conversation_id = parsed
+                    .conversation_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                if let (Some(peer_id), Some(conversation_id)) = (peer_id, conversation_id) {
+                    if !peer_id.eq_ignore_ascii_case(conversation_id) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "peer_id and conversation_id must match when both are set",
+                        ));
+                    }
+                }
+                let peer_filter = peer_id.or(conversation_id);
                 let page_limit = limit.saturating_add(1);
-                let mut items = self
-                    .store
-                    .list_messages_page(page_limit, before_ts, before_id.as_deref())
-                    .map_err(std::io::Error::other)?;
+                let mut items = if let Some(peer) = peer_filter {
+                    self.store
+                        .list_messages_page_for_peer(
+                            page_limit,
+                            before_ts,
+                            before_id.as_deref(),
+                            peer,
+                        )
+                        .map_err(std::io::Error::other)?
+                } else {
+                    self.store
+                        .list_messages_page(page_limit, before_ts, before_id.as_deref())
+                        .map_err(std::io::Error::other)?
+                };
                 let has_more = items.len() > limit;
                 if has_more {
                     items.truncate(limit);
+                }
+                if !include_receipts {
+                    for item in &mut items {
+                        item.receipt_status = None;
+                    }
                 }
                 let next_cursor = if has_more {
                     items.last().map(|record| format!("{}:{}", record.timestamp, record.id))
@@ -80,6 +112,17 @@ impl RpcDaemon {
                 })
             }
             "list_peers" => {
+                let peers = self
+                    .peers
+                    .lock()
+                    .expect("peers mutex poisoned")
+                    .values()
+                    .filter(|record| !record.peer.trim().is_empty())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for peer in &peers {
+                    self.restore_peer_record_queue_marks(peer)?;
+                }
                 let mut peers = self
                     .peers
                     .lock()

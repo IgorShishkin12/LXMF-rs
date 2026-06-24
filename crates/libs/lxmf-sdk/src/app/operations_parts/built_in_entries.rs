@@ -1,5 +1,6 @@
 fn built_in_entries() -> Vec<OperationEntry> {
-    vec![
+    [
+        vec![
         OperationEntry::new(
             "app.runtime.start",
             "runtime",
@@ -58,6 +59,17 @@ fn built_in_entries() -> Vec<OperationEntry> {
             "Return delivery state for a specific message id.",
         )
         .with_alias("sdk_status_v2"),
+        OperationEntry::new(
+            "app.delivery.cancel",
+            "delivery",
+            OperationKind::Command,
+            TransportVariant::Rpc,
+            "Cancel a queued outbound message when it has not reached a terminal state.",
+        )
+        .with_alias("sdk_cancel_message_v2"),
+    ],
+    propagation_operation_entries(),
+    vec![
         OperationEntry::new(
             "app.event.poll",
             "events",
@@ -129,6 +141,33 @@ fn built_in_entries() -> Vec<OperationEntry> {
         )
         .with_alias("sdk_identity_bootstrap_v2")
         .with_required_capability("sdk.capability.contact_management"),
+        OperationEntry::new(
+            "app.peer.connect",
+            "peer",
+            OperationKind::Command,
+            TransportVariant::Rpc,
+            "Connect to a saved peer and surface the resulting lifecycle state.",
+        )
+        .with_alias("sdk_peer_connect_v2")
+        .with_required_capability("sdk.capability.peer_lifecycle"),
+        OperationEntry::new(
+            "app.peer.disconnect",
+            "peer",
+            OperationKind::Command,
+            TransportVariant::Rpc,
+            "Disconnect a saved peer while preserving lifecycle metadata.",
+        )
+        .with_alias("sdk_peer_disconnect_v2")
+        .with_required_capability("sdk.capability.peer_lifecycle"),
+        OperationEntry::new(
+            "app.peer.reconnect",
+            "peer",
+            OperationKind::Command,
+            TransportVariant::Rpc,
+            "Reconnect a saved peer after transport or runtime recovery.",
+        )
+        .with_alias("sdk_peer_reconnect_v2")
+        .with_required_capability("sdk.capability.peer_lifecycle"),
         OperationEntry::new(
             "app.topic.create",
             "topics",
@@ -389,6 +428,14 @@ fn built_in_entries() -> Vec<OperationEntry> {
         .with_alias("sdk_voice_session_close_v2")
         .with_required_capability("sdk.capability.voice_signaling"),
         OperationEntry::new(
+            "app.message.conversation.list",
+            "messaging",
+            OperationKind::Query,
+            TransportVariant::LegacyRpc,
+            "List durable conversation summaries for app chat flows.",
+        )
+        .with_alias("list_conversations"),
+        OperationEntry::new(
             "app.message.history.list",
             "messaging",
             OperationKind::Query,
@@ -405,4 +452,6 @@ fn built_in_entries() -> Vec<OperationEntry> {
         )
         .with_alias("status"),
     ]
+    ]
+    .concat()
 }

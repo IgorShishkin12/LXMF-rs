@@ -38,7 +38,7 @@ pub(super) async fn ingest_announce_event(
     let hops = Some(u32::from(event.hops));
     let interface = Some(hex::encode(event.interface.as_slice()));
     let _ = daemon.accept_announce_with_metadata(
-        peer,
+        peer.clone(),
         timestamp,
         peer_name,
         peer_name_source,
@@ -56,6 +56,12 @@ pub(super) async fn ingest_announce_event(
         None,
         None,
         None,
+    );
+    let _ = daemon.record_announce_identity(
+        peer.as_str(),
+        hex::encode(identity.public_key_bytes()).as_str(),
+        hex::encode(identity.verifying_key_bytes()).as_str(),
+        timestamp,
     );
 }
 

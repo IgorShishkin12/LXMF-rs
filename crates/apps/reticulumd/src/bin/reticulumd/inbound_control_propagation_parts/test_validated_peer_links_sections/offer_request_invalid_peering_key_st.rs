@@ -26,6 +26,7 @@
             delivery_destination: None,
             allowed_control_identities: Vec::new(),
             validated_peer_links: test_validated_peer_links(),
+            identified_peer_links: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
 
         let first = handle_offer_request(
@@ -120,6 +121,7 @@
             delivery_destination: None,
             allowed_control_identities: Vec::new(),
             validated_peer_links: test_validated_peer_links(),
+            identified_peer_links: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
 
         let response = handle_offer_request(
@@ -186,6 +188,7 @@
             delivery_destination: None,
             allowed_control_identities: Vec::new(),
             validated_peer_links: test_validated_peer_links(),
+            identified_peer_links: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
 
         let response = handle_offer_request(
@@ -260,6 +263,7 @@
             delivery_destination: None,
             allowed_control_identities: Vec::new(),
             validated_peer_links: test_validated_peer_links(),
+            identified_peer_links: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
 
         let response = handle_offer_request(
@@ -326,6 +330,8 @@
         let remote_private =
             rns_transport::identity::PrivateIdentity::new_from_rand(rand_core::OsRng);
         let remote_identity = *remote_private.as_identity();
+        let remote_propagation_hash =
+            hex::encode(propagation_destination_hash_for_identity(&remote_identity));
         let mut peering_id = Vec::with_capacity(32);
         peering_id.extend_from_slice(local_identity_hash.as_slice());
         peering_id.extend_from_slice(remote_identity.address_hash.as_slice());
@@ -338,6 +344,7 @@
             delivery_destination: None,
             allowed_control_identities: Vec::new(),
             validated_peer_links: test_validated_peer_links(),
+            identified_peer_links: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
 
         let response = handle_offer_request(
@@ -348,6 +355,9 @@
             Some(rmpv::Value::Array(vec![
                 rmpv::Value::Binary(peering_key),
                 rmpv::Value::Array(vec![
+                    rmpv::Value::Binary(
+                        hex::decode(known_transient_id.as_str()).expect("known transient bytes"),
+                    ),
                     rmpv::Value::Binary(
                         hex::decode(known_transient_id.as_str()).expect("known transient bytes"),
                     ),
@@ -369,4 +379,19 @@
             vec![rmpv::Value::Binary(missing_transient.to_vec())],
             "duplicate offered missing IDs should be requested once"
         );
+        assert!(
+            daemon
+                .has_peer_completed_propagation_mark(
+                    remote_propagation_hash.as_str(),
+                    known_transient_id.as_str(),
+                )
+                .expect("known offer mark"),
+            "duplicate known offered IDs should be accounted once as source-completed"
+        );
+        daemon
+            .record_propagation_offer_peer(remote_propagation_hash.as_str())
+            .expect("admit peer after duplicate offer");
+        let row = list_peer_row(&daemon, remote_propagation_hash.as_str());
+        assert_eq!(row["messages"]["handled_ids"], json!([known_transient_id]));
+        assert_eq!(row["messages"]["unhandled_ids"], json!([]));
     }

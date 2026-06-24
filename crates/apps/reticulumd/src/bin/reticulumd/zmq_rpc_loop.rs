@@ -2,6 +2,7 @@
 
 use rns_rpc::rpc::zmq::{self, ZmqRpcEnvelope, ZmqRpcEnvelopeKind};
 use rns_rpc::{RpcDaemon, RpcError, RpcResponse};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
@@ -82,18 +83,23 @@ struct ZmqOutboundResponse {
 }
 
 async fn send_zmq_response(
-    responses: &mut HashMap<String, PushSocket>,
+    _responses: &mut HashMap<String, PushSocket>,
     response: ZmqOutboundResponse,
 ) -> io::Result<()> {
-    if !responses.contains_key(&response.endpoint) {
-        let mut socket = PushSocket::new();
-        socket.connect(response.endpoint.as_str()).await.map_err(zmq_io_error)?;
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        responses.insert(response.endpoint.clone(), socket);
-    }
-    let socket = responses
-        .get_mut(&response.endpoint)
-        .ok_or_else(|| io::Error::other("missing zmq response socket"))?;
+    let connect_endpoint = zmq_response_connect_endpoint(response.endpoint.as_str());
+    let mut socket = PushSocket::new();
+    log::debug!(
+        "[daemon] zmq rpc response connect advertised_endpoint={} connect_endpoint={}",
+        response.endpoint,
+        connect_endpoint
+    );
+    socket.connect(connect_endpoint.as_ref()).await.map_err(|err| {
+        io::Error::other(format!(
+            "zmq response connect advertised_endpoint={} connect_endpoint={} failed: {err}",
+            response.endpoint, connect_endpoint
+        ))
+    })?;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let encoded = zmq::encode_envelope(&response.envelope)?;
     socket.send(ZmqMessage::from(encoded)).await.map_err(zmq_io_error)
 }
@@ -114,13 +120,30 @@ fn handle_zmq_command_message(
 ) -> Option<ZmqOutboundResponse> {
     let bytes = match Vec::<u8>::try_from(message) {
         Ok(bytes) => bytes,
-        Err(_) => return None,
+        Err(err) => {
+            log::warn!(
+                "[daemon] zmq rpc command rejected reason=message_conversion_failed err={err}"
+            );
+            return None;
+        }
     };
     let envelope = match zmq::decode_envelope(&bytes) {
         Ok(envelope) => envelope,
-        Err(_) => return None,
+        Err(err) => {
+            log::warn!("[daemon] zmq rpc command rejected reason=envelope_decode_failed err={err}");
+            return None;
+        }
     };
-    let response_endpoint = envelope.response_endpoint.clone()?;
+    let response_endpoint = match envelope.response_endpoint.clone() {
+        Some(endpoint) => endpoint,
+        None => {
+            log::warn!(
+                "[daemon] zmq rpc command rejected request_id={} reason=missing_response_endpoint",
+                envelope.request_id
+            );
+            return None;
+        }
+    };
     let response_endpoint_is_local = is_local_zmq_endpoint(response_endpoint.as_str());
     if let Err(error) = authorize_zmq_envelope(
         daemon,
@@ -134,6 +157,11 @@ fn handle_zmq_command_message(
                 envelope: rpc_error_envelope(envelope.session_id, envelope.request_id, error),
             });
         }
+        log::warn!(
+            "[daemon] zmq rpc command rejected request_id={} code={} reason=remote_response_auth_failed",
+            envelope.request_id,
+            error.code
+        );
         return None;
     }
     if envelope.kind != ZmqRpcEnvelopeKind::Request {
@@ -154,7 +182,7 @@ fn handle_zmq_command_message(
                 result: None,
                 error: Some(RpcError::new("SDK_INTERNAL", err.to_string())),
             };
-            rns_rpc::rpc::codec::encode_frame(&response).unwrap_or_default()
+            encode_rpc_response_frame(&response)
         });
     Some(ZmqOutboundResponse {
         endpoint: response_endpoint,
@@ -199,11 +227,7 @@ fn authorize_zmq_envelope(
 
 fn rpc_error_envelope(session_id: String, request_id: u64, error: RpcError) -> ZmqRpcEnvelope {
     let response = RpcResponse { id: request_id, result: None, error: Some(error) };
-    ZmqRpcEnvelope::response(
-        session_id,
-        request_id,
-        rns_rpc::rpc::codec::encode_frame(&response).unwrap_or_default(),
-    )
+    ZmqRpcEnvelope::response(session_id, request_id, encode_rpc_response_frame(&response))
 }
 
 fn error_envelope(
@@ -217,11 +241,12 @@ fn error_envelope(
         result: None,
         error: Some(RpcError::new(code, message.into())),
     };
-    ZmqRpcEnvelope::response(
-        session_id.into(),
-        request_id,
-        rns_rpc::rpc::codec::encode_frame(&response).unwrap_or_default(),
-    )
+    ZmqRpcEnvelope::response(session_id.into(), request_id, encode_rpc_response_frame(&response))
+}
+
+fn encode_rpc_response_frame(response: &RpcResponse) -> Vec<u8> {
+    rns_rpc::rpc::codec::encode_frame(response)
+        .expect("RPC response frame serialization for ZMQ error response")
 }
 
 fn validate_zmq_loop_config(config: &ZmqRpcLoopConfig, daemon: &RpcDaemon) -> io::Result<()> {
@@ -252,6 +277,13 @@ fn is_local_zmq_endpoint(endpoint: &str) -> bool {
         || endpoint.starts_with("tcp://127.")
         || endpoint.starts_with("tcp://localhost:")
         || endpoint.starts_with("tcp://[::1]:")
+}
+
+fn zmq_response_connect_endpoint(endpoint: &str) -> Cow<'_, str> {
+    if let Some(port) = endpoint.strip_prefix("tcp://localhost:") {
+        return Cow::Owned(format!("tcp://127.0.0.1:{port}"));
+    }
+    Cow::Borrowed(endpoint)
 }
 
 fn zmq_io_error(err: impl std::fmt::Display) -> io::Error {
@@ -395,6 +427,18 @@ mod tests {
         assert!(is_recoverable_zmq_transport_error(&aborted));
         assert!(is_recoverable_zmq_transport_error(&reset));
         assert!(!is_recoverable_zmq_transport_error(&invalid));
+    }
+
+    #[test]
+    fn response_connect_endpoint_normalizes_localhost_to_numeric_loopback() {
+        assert_eq!(
+            zmq_response_connect_endpoint("tcp://localhost:9101").as_ref(),
+            "tcp://127.0.0.1:9101"
+        );
+        assert_eq!(
+            zmq_response_connect_endpoint("tcp://127.0.0.1:9101").as_ref(),
+            "tcp://127.0.0.1:9101"
+        );
     }
 
     fn token_auth_daemon() -> RpcDaemon {

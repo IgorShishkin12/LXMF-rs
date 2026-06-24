@@ -442,6 +442,22 @@ struct SdkIdentityPresenceListV2Params {
     #[serde(default)]
     limit: Option<usize>,
     #[serde(default)]
+    min_last_seen_ts_ms: Option<i64>,
+    #[serde(default)]
+    extensions: JsonMap<String, JsonValue>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SdkPeerConnectionV2Params {
+    identity: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    correlation_id: Option<String>,
+    #[serde(default)]
+    metadata: JsonMap<String, JsonValue>,
+    #[serde(default)]
     extensions: JsonMap<String, JsonValue>,
 }
 

@@ -253,6 +253,7 @@ impl RpcDaemon {
     ) {
         let mut guard = self.propagation_state.lock().expect("propagation mutex poisoned");
         guard.enabled = enabled;
+        guard.propagation_node_enabled = enabled;
         guard.store_root = store_root;
         guard.target_cost = target_cost;
         let state = guard.clone();
@@ -297,14 +298,16 @@ impl RpcDaemon {
         let stats = self.store.peer_message_stats(peer).map_err(std::io::Error::other)?;
         let propagation =
             self.store.peer_propagation_message_stats(peer).map_err(std::io::Error::other)?;
-        let (record_offered, record_outgoing, record_incoming) = self
-            .peers
-            .lock()
-            .ok()
-            .and_then(|guard| {
+        let (record_offered, record_outgoing, record_incoming) = match self.peers.lock() {
+            Ok(guard) => {
                 guard.get(peer).map(|record| (record.offered, record.outgoing, record.incoming))
-            })
-            .unwrap_or((0, 0, 0));
+            }
+            Err(err) => {
+                log::warn!("[rpc-daemon] failed to read peer message stats cache for {peer}: {err}");
+                None
+            }
+        }
+        .unwrap_or((0, 0, 0));
         Ok((
             stats.outgoing.saturating_add(record_outgoing.max(propagation.outgoing)),
             stats.incoming.saturating_add(record_incoming.max(propagation.incoming)),
@@ -363,11 +366,13 @@ impl RpcDaemon {
                 record.peer_type.as_deref() != Some("unpeered")
                     && record.peer.eq_ignore_ascii_case(peer)
             }) {
+                let now = now_i64();
                 existing.alive = true;
-                existing.last_seen = now_i64();
+                existing.last_seen = now;
                 existing.incoming = existing.incoming.saturating_add(messages as u64);
                 existing.rx_bytes = existing.rx_bytes.saturating_add(bytes as u64);
                 if clear_backoff {
+                    existing.last_sync_attempt = now;
                     existing.sync_backoff = 0;
                     existing.next_sync_attempt = 0;
                 }

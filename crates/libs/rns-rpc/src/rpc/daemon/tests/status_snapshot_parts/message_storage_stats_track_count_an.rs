@@ -163,6 +163,148 @@ fn list_messages_cursor_paginates_same_second_records_by_id() {
 }
 
 #[test]
+fn sdk_envelope_history_list_filters_peer_and_preserves_cursor() {
+    let daemon = RpcDaemon::test_instance();
+    for (id, peer, timestamp) in [
+        ("peer-newer", "peer-a", 1_700_000_102),
+        ("other-newer", "peer-b", 1_700_000_101),
+        ("peer-older", "peer-a", 1_700_000_100),
+    ] {
+        daemon
+            .accept_inbound(MessageRecord {
+                id: id.to_string(),
+                source: peer.to_string(),
+                destination: "local-destination".to_string(),
+                title: id.to_string(),
+                content: String::new(),
+                timestamp,
+                direction: "in".to_string(),
+                fields: None,
+                receipt_status: Some("delivered".to_string()),
+            })
+            .expect("store peer message");
+    }
+
+    let first = daemon
+        .handle_rpc(rpc_request(
+            39,
+            "sdk_envelope_execute_v2",
+            json!({
+                "operation_id": "app.message.history.list",
+                "kind": "query",
+                "payload": {
+                    "peer_id": "peer-a",
+                    "include_receipts": true,
+                    "limit": 1
+                }
+            }),
+        ))
+        .expect("sdk history first page")
+        .result
+        .expect("first page result");
+    let first_payload = &first["response"]["payload"];
+    let first_messages = first_payload["messages"].as_array().expect("first messages");
+    assert_eq!(
+        first_messages.iter().map(|row| row["id"].as_str().unwrap()).collect::<Vec<_>>(),
+        vec!["peer-newer"]
+    );
+    assert_eq!(first_payload["next_cursor"].as_str(), Some("1700000102:peer-newer"));
+
+    let second = daemon
+        .handle_rpc(rpc_request(
+            40,
+            "sdk_envelope_execute_v2",
+            json!({
+                "operation_id": "app.message.history.list",
+                "kind": "query",
+                "payload": {
+                    "peer_id": "peer-a",
+                    "cursor": first_payload["next_cursor"].as_str().unwrap(),
+                    "limit": 1
+                }
+            }),
+        ))
+        .expect("sdk history second page")
+        .result
+        .expect("second page result");
+    let second_payload = &second["response"]["payload"];
+    let second_messages = second_payload["messages"].as_array().expect("second messages");
+    assert_eq!(
+        second_messages.iter().map(|row| row["id"].as_str().unwrap()).collect::<Vec<_>>(),
+        vec!["peer-older"]
+    );
+    assert_eq!(second_payload["next_cursor"], JsonValue::Null);
+}
+
+#[test]
+fn sdk_envelope_history_list_omits_receipts_when_requested() {
+    let daemon = RpcDaemon::test_instance();
+    daemon
+        .accept_inbound(MessageRecord {
+            id: "peer-receipt".to_string(),
+            source: "peer-a".to_string(),
+            destination: "local-destination".to_string(),
+            title: "peer-receipt".to_string(),
+            content: String::new(),
+            timestamp: 1_700_000_103,
+            direction: "in".to_string(),
+            fields: None,
+            receipt_status: Some("delivered".to_string()),
+        })
+        .expect("store peer message");
+
+    let result = daemon
+        .handle_rpc(rpc_request(
+            41,
+            "sdk_envelope_execute_v2",
+            json!({
+                "operation_id": "app.message.history.list",
+                "kind": "query",
+                "payload": {
+                    "peer_id": "peer-a",
+                    "include_receipts": false,
+                    "limit": 1
+                }
+            }),
+        ))
+        .expect("sdk history result")
+        .result
+        .expect("history result");
+    let payload = &result["response"]["payload"];
+    let messages = payload["messages"].as_array().expect("messages");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["id"].as_str(), Some("peer-receipt"));
+    assert_eq!(messages[0]["receipt_status"], JsonValue::Null);
+}
+
+#[test]
+fn sdk_envelope_history_list_rejects_mismatched_peer_and_conversation_filters() {
+    let daemon = RpcDaemon::test_instance();
+    let response = daemon
+        .handle_rpc(rpc_request(
+            42,
+            "sdk_envelope_execute_v2",
+            json!({
+                "operation_id": "app.message.history.list",
+                "kind": "query",
+                "payload": {
+                    "peer_id": "peer-a",
+                    "conversation_id": "peer-b",
+                    "limit": 1
+                }
+            }),
+        ))
+        .expect("sdk history response");
+    let error = response.error.expect("expected error");
+    assert_eq!(error.code, "SDK_VALIDATION_INVALID_ARGUMENT");
+    assert!(
+        error.message.contains("peer_id and conversation_id must match"),
+        "unexpected error message: {}",
+        error.message
+    );
+}
+
+#[test]
 fn list_messages_omits_next_cursor_when_exact_limit_is_exhausted() {
     let daemon = RpcDaemon::test_instance();
     for id in ["msg-a", "msg-b"] {

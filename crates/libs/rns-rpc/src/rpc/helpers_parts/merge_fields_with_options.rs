@@ -42,6 +42,25 @@ fn merge_fields_with_options(
     Some(JsonValue::Object(root))
 }
 
+fn outbound_wire_fields(fields: Option<JsonValue>) -> Option<JsonValue> {
+    let Some(JsonValue::Object(map)) = fields else {
+        return None;
+    };
+
+    let wire = map
+        .into_iter()
+        .filter(|(key, _)| !is_private_outbound_field_key(key))
+        .collect::<JsonMap<String, JsonValue>>();
+    (!wire.is_empty()).then_some(JsonValue::Object(wire))
+}
+
+fn is_private_outbound_field_key(key: &str) -> bool {
+    matches!(
+        key,
+        "_lxmf" | "_sdk" | "_fields_raw" | "title" | "content" | "body" | "payload"
+    )
+}
+
 fn now_i64() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -127,7 +146,13 @@ fn parse_capabilities_from_app_data_hex(app_data_hex: Option<&str>) -> Vec<Strin
 }
 
 fn parse_rch_capabilities_from_lxmf_announce(app_data: &[u8]) -> Option<Vec<String>> {
-    let value = rmp_serde::from_slice::<MsgPackValue>(app_data).ok()?;
+    let value = match rmp_serde::from_slice::<MsgPackValue>(app_data) {
+        Ok(value) => value,
+        Err(err) => {
+            log::debug!("failed to decode LXMF announce app_data for capabilities: {err}");
+            return None;
+        }
+    };
     let entries = value.as_array()?;
     let capability_payload = match entries.get(2) {
         Some(MsgPackValue::Binary(bytes)) => bytes.as_slice(),
@@ -144,7 +169,7 @@ fn parse_rch_capability_payload(payload: &[u8]) -> Vec<String> {
         return Vec::new();
     }
 
-    if let Ok(value) = serde_cbor::from_slice::<JsonValue>(payload) {
+    if let Ok(value) = ciborium::de::from_reader::<JsonValue, _>(payload) {
         let capabilities = extract_rch_capabilities_from_json_value(&value);
         if !capabilities.is_empty() {
             return capabilities;
@@ -211,7 +236,7 @@ fn parse_bool_capability_flag(value: &MsgPackValue) -> bool {
             .is_some_and(|value| value == 1),
         MsgPackValue::F64(value) => *value == 1.0,
         MsgPackValue::F32(value) => f64::from(*value) == 1.0,
-        MsgPackValue::Binary(text) => parse_fuzzy_bool(std::str::from_utf8(text).ok()),
+        MsgPackValue::Binary(text) => parse_fuzzy_bool(decode_utf8_field(text)),
         MsgPackValue::String(text) => parse_fuzzy_bool(text.as_str()),
         _ => false,
     }
@@ -260,7 +285,7 @@ fn parse_fuzzy_u32(value: &MsgPackValue) -> Option<u32> {
         MsgPackValue::F64(value) => parse_f64_to_u32(*value),
         MsgPackValue::F32(value) => parse_f64_to_u32(f64::from(*value)),
         MsgPackValue::Boolean(value) => Some(u32::from(*value)),
-        MsgPackValue::Binary(bytes) => parse_text_to_u32(std::str::from_utf8(bytes).ok()?),
+        MsgPackValue::Binary(bytes) => parse_text_to_u32(decode_utf8_field(bytes)?),
         MsgPackValue::String(text) => parse_text_to_u32(text.as_str()?),
         _ => None,
     }
@@ -275,7 +300,7 @@ fn parse_fuzzy_nonnegative_f64(value: &MsgPackValue) -> Option<f64> {
         MsgPackValue::F64(value) => *value,
         MsgPackValue::F32(value) => f64::from(*value),
         MsgPackValue::Boolean(value) => f64::from(u8::from(*value)),
-        MsgPackValue::Binary(bytes) => std::str::from_utf8(bytes).ok()?.trim().parse().ok()?,
+        MsgPackValue::Binary(bytes) => decode_utf8_field(bytes)?.trim().parse().ok()?,
         MsgPackValue::String(text) => text.as_str()?.trim().parse().ok()?,
         _ => return None,
     };
@@ -312,7 +337,7 @@ fn parse_fuzzy_i64(value: &MsgPackValue) -> Option<i64> {
         }
         MsgPackValue::Boolean(value) => Some(if *value { 1 } else { 0 }),
         MsgPackValue::Binary(bytes) => {
-            std::str::from_utf8(bytes).ok()?.trim().parse::<i64>().ok()
+            decode_utf8_field(bytes)?.trim().parse::<i64>().ok()
         }
         MsgPackValue::String(text) => text.as_str()?.trim().parse::<i64>().ok(),
         _ => None,
@@ -404,7 +429,13 @@ fn parse_propagation_limits_from_app_data_hex(
 fn parse_propagation_timebase_from_app_data_hex(app_data_hex: Option<&str>) -> Option<i64> {
     let raw_hex = app_data_hex.map(str::trim).filter(|value| !value.is_empty())?;
     let app_data = hex::decode(raw_hex).ok()?;
-    let value = rmp_serde::from_slice::<MsgPackValue>(&app_data).ok()?;
+    let value = match rmp_serde::from_slice::<MsgPackValue>(&app_data) {
+        Ok(value) => value,
+        Err(err) => {
+            log::debug!("failed to decode propagation app_data for timebase: {err}");
+            return None;
+        }
+    };
     let entries = value.as_array()?;
     entries.get(1).and_then(parse_fuzzy_i64)
 }
@@ -412,7 +443,13 @@ fn parse_propagation_timebase_from_app_data_hex(app_data_hex: Option<&str>) -> O
 fn parse_propagation_enabled_from_app_data_hex(app_data_hex: Option<&str>) -> Option<bool> {
     let raw_hex = app_data_hex.map(str::trim).filter(|value| !value.is_empty())?;
     let app_data = hex::decode(raw_hex).ok()?;
-    let value = rmp_serde::from_slice::<MsgPackValue>(&app_data).ok()?;
+    let value = match rmp_serde::from_slice::<MsgPackValue>(&app_data) {
+        Ok(value) => value,
+        Err(err) => {
+            log::debug!("failed to decode propagation app_data for enabled flag: {err}");
+            return None;
+        }
+    };
     let entries = value.as_array()?;
     if entries.len() < 6 {
         return None;
@@ -439,7 +476,13 @@ fn parse_propagation_metadata_from_app_data_hex(app_data_hex: Option<&str>) -> J
 fn parse_peer_name_from_app_data_hex(app_data_hex: Option<&str>) -> Option<(String, &'static str)> {
     let raw_hex = app_data_hex.map(str::trim).filter(|value| !value.is_empty())?;
     let app_data = hex::decode(raw_hex).ok()?;
-    let value = rmp_serde::from_slice::<MsgPackValue>(&app_data).ok()?;
+    let value = match rmp_serde::from_slice::<MsgPackValue>(&app_data) {
+        Ok(value) => value,
+        Err(err) => {
+            log::debug!("failed to decode app_data for peer name: {err}");
+            return None;
+        }
+    };
     let entries = value.as_array()?;
 
     if let Some(name) = entries.get(6).and_then(parse_pn_metadata_name) {
@@ -449,4 +492,9 @@ fn parse_peer_name_from_app_data_hex(app_data_hex: Option<&str>) -> Option<(Stri
         return Some((name, "delivery_app_data"));
     }
     None
+}
+fn decode_utf8_field(bytes: &[u8]) -> Option<&str> {
+    let decoded = std::str::from_utf8(bytes)
+        .inspect_err(|err| log::debug!("invalid UTF-8 in app_data field: {err}"));
+    decoded.ok()
 }

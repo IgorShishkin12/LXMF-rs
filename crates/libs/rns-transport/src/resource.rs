@@ -42,6 +42,7 @@ const FLAG_METADATA: u8 = 0x20;
 const METADATA_MAX_SIZE: usize = 16 * 1024 * 1024 - 1;
 const AUTO_COMPRESS_MAX_SIZE: usize = 64 * 1024 * 1024;
 const MAX_INBOUND_RESOURCE_TRANSFER_SIZE: u64 = AUTO_COMPRESS_MAX_SIZE as u64;
+const MAX_INBOUND_RESOURCE_PARTS: u64 = 8_192;
 pub const DEFAULT_RESOURCE_RETRY_INTERVAL_SECS: u64 = 2;
 pub const DEFAULT_RESOURCE_MAX_RETRIES: u8 = 16;
 const DEFAULT_RESOURCE_MAX_ADV_RETRIES: u8 = 4;
@@ -156,10 +157,18 @@ pub struct ResourceEvent {
     pub kind: ResourceEventKind,
 }
 
+/// Resource transfer event emitted by `ResourceManager`.
+///
+/// Downstream consumers should include a catch-all match arm. New terminal
+/// variants may be added when previously silent failure classes become
+/// operator-visible.
 #[derive(Debug, Clone)]
 pub enum ResourceEventKind {
     Progress(ResourceProgress),
     Complete(ResourceComplete),
+    /// Inbound transfer failed before completion. This variant was added for
+    /// issue #369 diagnostics and is an intentional public event surface change.
+    InboundFailed(ResourceFailure),
     OutboundComplete,
     OutboundFailed,
     OutboundCancelled,
@@ -171,6 +180,12 @@ pub struct ResourceProgress {
     pub total_bytes: u64,
     pub received_parts: usize,
     pub total_parts: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResourceFailure {
+    pub reason: String,
+    pub progress: ResourceProgress,
 }
 
 #[derive(Debug, Clone)]

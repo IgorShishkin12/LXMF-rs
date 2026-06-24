@@ -68,9 +68,15 @@ impl RatchetStore {
             self.remove_record(destination);
             return None;
         }
-        let ratchet = record.ratchet.as_ref().try_into().ok();
+        let ratchet = match ratchet_bytes(destination, &record) {
+            Some(ratchet) => ratchet,
+            None => {
+                self.remove_record(destination);
+                return None;
+            }
+        };
         self.cache.insert(*destination, record);
-        ratchet
+        Some(ratchet)
     }
 
     pub(crate) fn clean_expired(&mut self, now: f64) {
@@ -108,8 +114,21 @@ impl RatchetStore {
 
     fn load_record(&self, destination: &AddressHash) -> Option<RatchetRecord> {
         let path = self.path_for(destination);
-        let data = fs::read(path).ok()?;
-        rmp_serde::from_slice::<RatchetRecord>(&data).ok()
+        let data = match fs::read(&path) {
+            Ok(data) => data,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(err) => {
+                log::warn!("failed to read ratchet file {}: {err}", path.display());
+                return None;
+            }
+        };
+        match rmp_serde::from_slice::<RatchetRecord>(&data) {
+            Ok(record) => Some(record),
+            Err(err) => {
+                log::warn!("failed to decode ratchet file {}: {err}", path.display());
+                None
+            }
+        }
     }
 
     fn remove_record(&self, destination: &AddressHash) {
@@ -119,6 +138,24 @@ impl RatchetStore {
 
     fn path_for(&self, destination: &AddressHash) -> PathBuf {
         self.ratchet_dir.join(destination.to_hex_string())
+    }
+}
+
+fn ratchet_bytes(
+    destination: &AddressHash,
+    record: &RatchetRecord,
+) -> Option<[u8; PUBLIC_KEY_LENGTH]> {
+    match record.ratchet.as_ref().try_into() {
+        Ok(ratchet) => Some(ratchet),
+        Err(_) => {
+            log::warn!(
+                "invalid ratchet length destination={} len={} expected={}",
+                destination,
+                record.ratchet.as_ref().len(),
+                PUBLIC_KEY_LENGTH
+            );
+            None
+        }
     }
 }
 
@@ -241,5 +278,20 @@ mod tests {
         fs::write(temp.path().join(dest.to_hex_string()), encoded).expect("write");
         let ratchet = store.get(&dest);
         assert!(ratchet.is_none(), "expired ratchet should be ignored");
+    }
+
+    #[test]
+    fn ratchet_store_removes_malformed_length_without_caching() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut store = RatchetStore::new(temp.path().to_path_buf());
+        let dest = AddressHash::new_from_rand(rand_core::OsRng);
+        let path = temp.path().join(dest.to_hex_string());
+        let record = RatchetRecord { ratchet: ByteBuf::from(vec![2u8; 3]), received: now_secs() };
+        let encoded = rmp_serde::to_vec_named(&record).expect("encode");
+        fs::write(&path, encoded).expect("write malformed ratchet");
+
+        assert!(store.get(&dest).is_none());
+        assert!(!store.cache.contains_key(&dest));
+        assert!(!path.exists(), "malformed ratchet file should be removed");
     }
 }

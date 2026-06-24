@@ -83,6 +83,51 @@ fn propagation_remote_fetch_derives_missing_transient_id_from_payload_bytes() {
 }
 
 #[test]
+fn propagation_remote_fetch_accepts_stamped_payload_with_canonical_transient_id() {
+    let lxm_data = vec![0x42_u8; 113];
+    let mut stamped_payload = lxm_data.clone();
+    stamped_payload.extend_from_slice(&[0x77_u8; 32]);
+    let payload_hex = hex::encode(stamped_payload);
+    let transient_id = hex::encode(Sha256::digest(lxm_data.as_slice()));
+    let daemon = RpcDaemon::test_instance();
+    daemon.set_remote_control_bridge(Arc::new(TestRemoteControlBridge {
+        result: Ok(json!({
+            "available_count": 1,
+            "fetched_count": 1,
+            "imported_count": 1,
+            "messages": [{
+                "transient_id": transient_id,
+                "payload_hex": payload_hex,
+            }],
+        })),
+    }));
+
+    daemon
+        .handle_rpc(rpc_request(
+            76,
+            "propagation_remote_fetch",
+            json!({
+                "remote": "remote-node",
+            }),
+        ))
+        .expect("remote fetch");
+
+    daemon.propagation_payloads.lock().expect("propagation payload mutex poisoned").clear();
+    let fetched = daemon
+        .handle_rpc(rpc_request(
+            77,
+            "propagation_fetch",
+            json!({
+                "transient_id": transient_id,
+            }),
+        ))
+        .expect("local fetch after remote import")
+        .result
+        .expect("local fetch result");
+    assert_eq!(fetched["payload_hex"].as_str(), Some(hex::encode(lxm_data).as_str()));
+}
+
+#[test]
 fn propagation_remote_fetch_rejects_mismatched_transient_id() {
     let payload_hex = hex::encode(b"remote-payload-with-mismatched-id");
     let daemon = RpcDaemon::test_instance();
@@ -380,4 +425,52 @@ fn propagation_remote_download_marks_source_received_and_queues_other_peers() {
         .expect("relay pending");
     assert_eq!(relay_pending.len(), 1);
     assert_eq!(relay_pending[0].transient_id, transient_id);
+}
+
+#[test]
+fn propagation_remote_download_marks_inactive_source_received_for_later_activation_like_python() {
+    let payload = b"remote-download-inactive-source-payload";
+    let payload_hex = hex::encode(payload);
+    let transient_id = hex::encode(Sha256::digest(payload));
+    let source_peer = "remote-download-late-source";
+    let daemon = RpcDaemon::test_instance();
+    daemon.set_remote_control_bridge(Arc::new(TestRemoteControlBridge {
+        result: Ok(json!({
+            "downloaded_count": 1,
+            "messages": [{
+                "transient_id": transient_id,
+                "payload_hex": payload_hex,
+            }],
+        })),
+    }));
+
+    daemon
+        .handle_rpc(rpc_request(
+            82,
+            "propagation_remote_download",
+            json!({ "remote": source_peer }),
+        ))
+        .expect("remote download from inactive source");
+
+    assert_eq!(
+        daemon
+            .store
+            .list_peer_handled_propagation_ids(source_peer)
+            .expect("inactive source handled ids"),
+        vec![transient_id.clone()],
+        "inactive source should be marked received before later peer activation"
+    );
+
+    let sync = daemon
+        .handle_rpc(rpc_request(83, "peer_sync", json!({ "peer": source_peer })))
+        .expect("activate source peer")
+        .result
+        .expect("peer sync result");
+    assert_eq!(sync["propagation"]["transferred"].as_u64(), Some(0));
+    assert!(sync["propagation"]["messages"].as_array().expect("transferred messages").is_empty());
+    assert_eq!(sync["messages"]["incoming"].as_u64(), Some(1));
+    assert_eq!(
+        sync["messages"]["handled_ids"].as_array().expect("handled ids"),
+        &[json!(transient_id.as_str())]
+    );
 }

@@ -40,11 +40,21 @@ impl<B: SdkBackend> Client<B> {
         cursor: Option<String>,
         limit: Option<usize>,
     ) -> Result<PresencePage, Error> {
+        self.presence_since(cursor, limit, None)
+    }
+
+    pub fn presence_since(
+        &self,
+        cursor: Option<String>,
+        limit: Option<usize>,
+        min_last_seen_ts_ms: Option<i64>,
+    ) -> Result<PresencePage, Error> {
         let result = self
             .backend
             .identity_presence_list(PresenceListRequest {
                 cursor,
                 limit,
+                min_last_seen_ts_ms,
                 extensions: BTreeMap::new(),
             })
             .map_err(Error::from)?;
@@ -62,6 +72,14 @@ impl<B: SdkBackend> Client<B> {
     }
 
     pub fn peer_directory(&self, limit: Option<usize>) -> Result<Vec<PeerDirectoryEntry>, Error> {
+        self.peer_directory_since(limit, None)
+    }
+
+    pub fn peer_directory_since(
+        &self,
+        limit: Option<usize>,
+        min_last_seen_ts_ms: Option<i64>,
+    ) -> Result<Vec<PeerDirectoryEntry>, Error> {
         let mut entries = BTreeMap::<String, PeerDirectoryEntry>::new();
 
         for contact in self.collect_contacts(limit)? {
@@ -70,7 +88,7 @@ impl<B: SdkBackend> Client<B> {
                 PeerDirectoryEntry {
                     peer_id: contact.identity.clone(),
                     display_name: contact.display_name.clone(),
-                    name_source: Some("contact".to_owned()),
+                    name_source: contact.display_name.as_ref().map(|_| "contact".to_owned()),
                     trust_level: Some(contact.trust_level.clone()),
                     bootstrap: contact.bootstrap,
                     online: false,
@@ -83,7 +101,7 @@ impl<B: SdkBackend> Client<B> {
             );
         }
 
-        for presence in self.collect_presence(limit)? {
+        for presence in self.collect_presence(limit, min_last_seen_ts_ms)? {
             let entry =
                 entries.entry(presence.peer_id.clone()).or_insert_with(|| PeerDirectoryEntry {
                     peer_id: presence.peer_id.clone(),
@@ -166,12 +184,6 @@ impl<B: SdkBackend> Client<B> {
         loop {
             let page = self.contacts(cursor.clone(), limit)?;
             contacts.extend(page.contacts);
-            if let Some(limit) = limit {
-                if contacts.len() >= limit {
-                    contacts.truncate(limit);
-                    break;
-                }
-            }
             match page.next_cursor {
                 Some(next_cursor) if cursor.as_deref() != Some(next_cursor.as_str()) => {
                     cursor = Some(next_cursor);
@@ -183,19 +195,17 @@ impl<B: SdkBackend> Client<B> {
         Ok(contacts)
     }
 
-    pub(crate) fn collect_presence(&self, limit: Option<usize>) -> Result<Vec<Presence>, Error> {
+    pub(crate) fn collect_presence(
+        &self,
+        limit: Option<usize>,
+        min_last_seen_ts_ms: Option<i64>,
+    ) -> Result<Vec<Presence>, Error> {
         let mut peers = Vec::new();
         let mut cursor = None;
 
         loop {
-            let page = self.presence(cursor.clone(), limit)?;
+            let page = self.presence_since(cursor.clone(), limit, min_last_seen_ts_ms)?;
             peers.extend(page.peers);
-            if let Some(limit) = limit {
-                if peers.len() >= limit {
-                    peers.truncate(limit);
-                    break;
-                }
-            }
             match page.next_cursor {
                 Some(next_cursor) if cursor.as_deref() != Some(next_cursor.as_str()) => {
                     cursor = Some(next_cursor);

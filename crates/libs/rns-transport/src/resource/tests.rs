@@ -213,6 +213,51 @@ mod tests {
     }
 
     #[test]
+    fn resource_receiver_uses_advertised_hashmap_stride_for_updates() {
+        let random_hash = [3u8; RANDOM_HASH_SIZE];
+        let parts = [
+            b"part-00".as_slice(),
+            b"part-01".as_slice(),
+            b"part-02".as_slice(),
+            b"part-03".as_slice(),
+        ];
+        let map_hashes: Vec<[u8; MAPHASH_LEN]> =
+            parts.iter().map(|part| map_hash(part, &random_hash)).collect();
+        let mut first_segment = Vec::with_capacity(MAPHASH_LEN * 2);
+        first_segment.extend_from_slice(&map_hashes[0]);
+        first_segment.extend_from_slice(&map_hashes[1]);
+        let mut second_segment = Vec::with_capacity(MAPHASH_LEN * 2);
+        second_segment.extend_from_slice(&map_hashes[2]);
+        second_segment.extend_from_slice(&map_hashes[3]);
+        let adv = ResourceAdvertisement {
+            transfer_size: parts.iter().map(|part| part.len() as u64).sum(),
+            data_size: parts.iter().map(|part| part.len() as u64).sum(),
+            parts: parts.len() as u32,
+            hash: Hash::new_from_slice(&[9u8; 32]),
+            random_hash,
+            original_hash: Hash::new_from_slice(&[9u8; 32]),
+            segment_index: 1,
+            total_segments: 2,
+            request_id: None,
+            flags: 0,
+            hashmap: first_segment,
+        };
+
+        let mut receiver =
+            ResourceReceiver::new(&adv, AddressHash::new_from_slice(&[4u8; ADDRESS_HASH_SIZE]))
+                .expect("receiver accepts smaller advertised hashmap segment");
+        assert_eq!(receiver.hashmap_segment_len, 2);
+
+        receiver.handle_hash_update(&ResourceHashUpdate {
+            resource_hash: adv.hash,
+            segment: 1,
+            hashmap: second_segment,
+        });
+
+        assert_eq!(receiver.hashmap, map_hashes.into_iter().map(Some).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn resource_completion_preserves_request_response_metadata() {
         let signer = PrivateIdentity::new_from_rand(OsRng);
         let identity = *signer.as_identity();
@@ -315,6 +360,53 @@ mod tests {
         let responses = manager.handle_packet(&part_packet, &mut link);
         assert!(responses.is_empty());
         assert!(manager.incoming.is_empty());
+        let events = manager.drain_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].hash, resource_hash);
+        assert_eq!(events[0].link_id, *link.id());
+        let ResourceEventKind::InboundFailed(failure) = &events[0].kind else {
+            panic!("expected inbound failure event");
+        };
+        assert_eq!(failure.reason, "decompress_failed");
+        assert_eq!(failure.progress.received_parts, 1);
+    }
+
+    #[test]
+    fn resource_receiver_reports_failure_reason() {
+        let signer = PrivateIdentity::new_from_rand(OsRng);
+        let identity = *signer.as_identity();
+        let destination = DestinationDesc {
+            identity,
+            address_hash: identity.address_hash,
+            name: DestinationName::new("lxmf", "resource"),
+        };
+        let (tx, _) = tokio::sync::broadcast::channel(1);
+        let mut link = Link::new(destination, tx);
+        link.request();
+
+        let part = b"not-bzip";
+        let random_hash = [5u8; RANDOM_HASH_SIZE];
+        let mut hashmap = Vec::with_capacity(MAPHASH_LEN);
+        hashmap.extend_from_slice(&map_hash(part, &random_hash));
+        let adv = ResourceAdvertisement {
+            transfer_size: part.len() as u64,
+            data_size: part.len() as u64,
+            parts: 1,
+            hash: Hash::new_from_slice(&[8u8; 32]),
+            random_hash,
+            original_hash: Hash::new_from_slice(&[8u8; 32]),
+            segment_index: 1,
+            total_segments: 1,
+            request_id: None,
+            flags: FLAG_COMPRESSED,
+            hashmap,
+        };
+        let mut receiver = ResourceReceiver::new(&adv, *link.id()).expect("resource receiver");
+
+        assert!(matches!(
+            receiver.handle_part(part, &link),
+            PartOutcome::Failed("decompress_failed")
+        ));
     }
 
     #[test]
@@ -355,22 +447,66 @@ mod tests {
     }
 
     #[test]
-    fn resource_receiver_bounds_part_count_by_transfer_size_and_mdu() {
+    fn resource_receiver_accepts_sender_with_smaller_effective_sdu() {
+        let signer = PrivateIdentity::new_from_rand(OsRng);
+        let identity = *signer.as_identity();
+        let destination = DestinationDesc {
+            identity,
+            address_hash: identity.address_hash,
+            name: DestinationName::new("lxmf", "resource"),
+        };
+        let (tx, _) = tokio::sync::broadcast::channel(1);
+        let mut link = Link::new(destination, tx);
+        link.request();
+
+        let advertised_parts = 16;
+        let adv = ResourceAdvertisement {
+            transfer_size: PACKET_MDU as u64 + 1,
+            data_size: PACKET_MDU as u64 + 1,
+            parts: advertised_parts,
+            hash: Hash::new_from_slice(&[4u8; 32]),
+            random_hash: [0u8; RANDOM_HASH_SIZE],
+            original_hash: Hash::new_from_slice(&[4u8; 32]),
+            segment_index: 1,
+            total_segments: 1,
+            request_id: None,
+            flags: 0,
+            hashmap: vec![0u8; MAPHASH_LEN * advertised_parts as usize],
+        };
+
+        let packet =
+            resource_packet(PacketContext::ResourceAdvrtisement, &adv.pack().expect("advertisement"), *link.id());
+
+        let mut manager = ResourceManager::new_with_config(Duration::from_secs(1), 1);
+        let responses = manager.handle_packet(&packet, &mut link);
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(manager.incoming.len(), 1);
+    }
+
+    #[test]
+    fn resource_receiver_bounds_part_count_by_transfer_size_and_global_cap() {
         assert_eq!(max_advertised_parts(1, PACKET_MDU).expect("one byte transfer"), 1);
         assert_eq!(
             max_advertised_parts(PACKET_MDU as u64, PACKET_MDU).expect("one packet transfer"),
-            1
+            PACKET_MDU as u64
         );
         assert_eq!(
             max_advertised_parts(PACKET_MDU as u64 + 1, PACKET_MDU)
-                .expect("two packet transfer"),
-            2
+                .expect("larger transfer"),
+            PACKET_MDU as u64 + 1
         );
         assert!(max_advertised_parts(0, PACKET_MDU).is_err());
         assert!(max_advertised_parts(MAX_INBOUND_RESOURCE_TRANSFER_SIZE + 1, PACKET_MDU).is_err());
+        assert_eq!(
+            max_advertised_parts(MAX_INBOUND_RESOURCE_TRANSFER_SIZE, PACKET_MDU)
+                .expect("maximum transfer"),
+            MAX_INBOUND_RESOURCE_PARTS
+        );
     }
 
     include!("tests_mtu.rs");
+    include!("tests_retry_failures.rs");
     include!("tests_timeouts.rs");
     include!("tests_timeouts_lifecycle.rs");
 

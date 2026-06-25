@@ -94,6 +94,23 @@ fn resource_hashmap_segment_len_for_mtu(interface_mtu: usize) -> Result<usize, R
         .ok_or(RnsError::InvalidArgument)
 }
 
+/// Wire overhead of a `ResourceRequest` payload (see `ResourceRequest::encode`):
+/// 1 flag byte + the `last_map_hash` (`MAPHASH_LEN`, present when exhausted) + the
+/// 32-byte `resource_hash`, with a little margin. The rest of the control MDU is
+/// `requested_hashes` (`MAPHASH_LEN` each).
+const REQUEST_OVERHEAD: usize = HASH_SIZE + MAPHASH_LEN + 4;
+
+/// Maximum number of part-hashes a single `ResourceRequest` packet can ask for on
+/// a link with the given MTU. The receive window must be capped to this so a
+/// request never overruns the MTU (which the KISS serializer would silently drop).
+fn resource_request_max_hashes_for_mtu(interface_mtu: usize) -> Result<usize, RnsError> {
+    resource_control_mdu_for_mtu(interface_mtu)?
+        .checked_sub(REQUEST_OVERHEAD)
+        .map(|available| available / MAPHASH_LEN)
+        .filter(|entries| *entries > 0)
+        .ok_or(RnsError::InvalidArgument)
+}
+
 /// How many map-hashes fit in a single `ResourceHashUpdate` packet.
 ///
 /// A hash-update's wire frame is just `(segment: u32, hashmap: bytes)`, so unlike

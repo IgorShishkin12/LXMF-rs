@@ -6,6 +6,10 @@ struct ResourceReceiver {
     parts: Vec<Option<Vec<u8>>>,
     hashmap: Vec<Option<[u8; MAPHASH_LEN]>>,
     hashmap_segment_len: usize,
+    /// Max part-hashes one ResourceRequest packet can carry on this link's MTU.
+    /// The per-request ask is capped to this so the request never overruns the
+    /// MTU (which the KISS serializer would silently drop).
+    max_request_hashes: usize,
     received: usize,
     received_bytes: u64,
     total_bytes: u64,
@@ -61,6 +65,7 @@ impl ResourceReceiver {
         let now = Instant::now();
         let resource_mdu = resource_packet_mdu_for_mtu(interface_mtu)?;
         let local_hashmap_segment_len = resource_hashmap_segment_len_for_mtu(interface_mtu)?;
+        let max_request_hashes = resource_request_max_hashes_for_mtu(interface_mtu)?;
         let max_parts = max_advertised_parts(adv.transfer_size, resource_mdu)?;
         if adv.parts == 0 || u64::from(adv.parts) > max_parts {
             return Err(RnsError::InvalidArgument);
@@ -79,6 +84,7 @@ impl ResourceReceiver {
             parts: vec![None; total_parts],
             hashmap: vec![None; total_parts],
             hashmap_segment_len,
+            max_request_hashes,
             received: 0,
             received_bytes: 0,
             total_bytes: adv.transfer_size,
@@ -176,7 +182,15 @@ impl ResourceReceiver {
 
         // Fill available window slots. Lost fragments are at the front of request_queue
         // (pushed there above) so they get priority over new fragments.
-        let window_space = window.max(WINDOW).saturating_sub(self.in_flight_set.len());
+        // The number asked for in a SINGLE request is capped to what one request
+        // packet can carry on this MTU (`max_request_hashes`) — otherwise the
+        // packet overruns the link MTU and the KISS serializer silently drops it,
+        // stalling the transfer. The full window is still reached across multiple
+        // requests (per tick / per received part).
+        let window_space = window
+            .max(WINDOW)
+            .saturating_sub(self.in_flight_set.len())
+            .min(self.max_request_hashes);
         let mut requested = Vec::new();
         while requested.len() < window_space {
             match self.request_queue.pop_front() {

@@ -616,6 +616,27 @@ mod tests {
             control_mdu,
             update_len
         );
+
+        // Same guard for the receiver's request: a request packed to
+        // `max_request_hashes` must fit the control MDU once encoded (which
+        // includes the resource_hash + flag + last_map_hash). The receive window
+        // is capped to this; if the cap is wrong the request overruns the MTU and
+        // is silently dropped, stalling the transfer (regression for log 71).
+        let max_req = resource_request_max_hashes_for_mtu(LORA_MTU).unwrap();
+        assert!(max_req >= segment_len, "request must carry at least a segment");
+        let req = ResourceRequest {
+            hashmap_exhausted: true,
+            last_map_hash: Some([0u8; MAPHASH_LEN]),
+            resource_hash: Hash::new_from_slice(&[0u8; HASH_SIZE]),
+            requested_hashes: vec![[0u8; MAPHASH_LEN]; max_req],
+        };
+        assert!(
+            req.encode().len() <= control_mdu,
+            "request encoded size {} exceeds control MDU {} (max_request_hashes={})",
+            req.encode().len(),
+            control_mdu,
+            max_req
+        );
     }
 
     #[test]

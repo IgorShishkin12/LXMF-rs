@@ -585,6 +585,22 @@ mod tests {
     }
 
     #[test]
+    fn hashmap_update_carries_far_more_hashes_than_advertisement_segment() {
+        // On a small-MTU link the advertisement can only carry a couple of part
+        // hashes, but a ResourceHashUpdate packet (tiny frame overhead) carries
+        // many more — this is what lets the receiver learn the full hashmap in a
+        // few packets instead of one round-trip per segment.
+        const LORA_MTU: usize = 220;
+        let segment_len = resource_hashmap_segment_len_for_mtu(LORA_MTU).unwrap();
+        let update_len = resource_hashmap_update_len_for_mtu(LORA_MTU).unwrap();
+        assert!(segment_len >= 1);
+        assert!(
+            update_len > segment_len * 4,
+            "hash-update should carry many more hashes ({update_len}) than an advertisement segment ({segment_len})"
+        );
+    }
+
+    #[test]
     fn effective_window_adapts_to_bandwidth_delay_product() {
         let mut s = LinkStats::new();
 

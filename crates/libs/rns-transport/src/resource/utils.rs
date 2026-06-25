@@ -83,6 +83,26 @@ fn slice_hashmap_segment(
     out
 }
 
+/// Serialize up to `count` map-hashes starting at hash index `start`.
+///
+/// Unlike `slice_hashmap_segment` (which is keyed by a fixed segment size), this
+/// lets a single `ResourceHashUpdate` packet carry several segments' worth of
+/// hashes — a hash-update frame has far less overhead than the advertisement, so
+/// it can deliver many more hashes per packet. The receiver applies the block at
+/// `segment * segment_len`, so callers must pass a `start` that is a multiple of
+/// the segment length (and a `count` that is too) to keep indices aligned.
+fn slice_hashmap_range(hashes: &[[u8; MAPHASH_LEN]], start: usize, count: usize) -> Vec<u8> {
+    if start >= hashes.len() {
+        return Vec::new();
+    }
+    let end = usize::min(start + count, hashes.len());
+    let mut out = Vec::with_capacity((end - start) * MAPHASH_LEN);
+    for hash in &hashes[start..end] {
+        out.extend_from_slice(hash);
+    }
+    out
+}
+
 fn map_hash(part: &[u8], random_hash: &[u8; RANDOM_HASH_SIZE]) -> [u8; MAPHASH_LEN] {
     let mut hasher = sha2::Sha256::new();
     hasher.update(part);

@@ -25,6 +25,10 @@ pub const WINDOW_MAX: usize = 64;
 pub const MAPHASH_LEN: usize = 4;
 pub const RANDOM_HASH_SIZE: usize = 4;
 pub const ADVERTISEMENT_OVERHEAD: usize = 134;
+/// Wire overhead of a `ResourceHashUpdate` frame `(segment: u32, hashmap: bytes)`
+/// — msgpack array + u32 + byte-string headers, with margin. Far smaller than
+/// `ADVERTISEMENT_OVERHEAD`, so hash-update packets carry many more hashes.
+const HASH_UPDATE_OVERHEAD: usize = 16;
 const HEADER_MINSIZE: usize = 2 + 1 + ADDRESS_HASH_SIZE;
 const HEADER_MAXSIZE: usize = 2 + 1 + (ADDRESS_HASH_SIZE * 2);
 const IFAC_MIN_SIZE: usize = 1;
@@ -64,20 +68,39 @@ pub(crate) fn resource_packet_mdu_for_mtu(interface_mtu: usize) -> Result<usize,
         .ok_or(RnsError::InvalidArgument)
 }
 
+/// Usable payload (after Fernet) of a resource control packet (advertisement,
+/// request, hash-update) on a link with the given interface MTU.
+fn resource_control_mdu_for_mtu(interface_mtu: usize) -> Result<usize, RnsError> {
+    if interface_mtu >= DEFAULT_RESOURCE_INTERFACE_MTU {
+        return Ok(LINK_PACKET_MDU);
+    }
+    let payload_capacity = interface_mtu
+        .checked_sub(IFAC_MIN_SIZE + HEADER_MINSIZE + FERNET_OVERHEAD_SIZE)
+        .ok_or(RnsError::InvalidArgument)?;
+    (payload_capacity / FERNET_MAX_PADDING_SIZE)
+        .checked_mul(FERNET_MAX_PADDING_SIZE)
+        .and_then(|value| value.checked_sub(1))
+        .ok_or(RnsError::InvalidArgument)
+}
+
 fn resource_hashmap_segment_len_for_mtu(interface_mtu: usize) -> Result<usize, RnsError> {
-    let encrypted_control_mdu = if interface_mtu >= DEFAULT_RESOURCE_INTERFACE_MTU {
-        LINK_PACKET_MDU
-    } else {
-        let payload_capacity = interface_mtu
-            .checked_sub(IFAC_MIN_SIZE + HEADER_MINSIZE + FERNET_OVERHEAD_SIZE)
-            .ok_or(RnsError::InvalidArgument)?;
-        (payload_capacity / FERNET_MAX_PADDING_SIZE)
-            .checked_mul(FERNET_MAX_PADDING_SIZE)
-            .and_then(|value| value.checked_sub(1))
-            .ok_or(RnsError::InvalidArgument)?
-    };
-    encrypted_control_mdu
+    resource_control_mdu_for_mtu(interface_mtu)?
         .checked_sub(ADVERTISEMENT_OVERHEAD)
+        .map(|available| available / MAPHASH_LEN)
+        .filter(|entries| *entries > 0)
+        .ok_or(RnsError::InvalidArgument)
+}
+
+/// How many map-hashes fit in a single `ResourceHashUpdate` packet.
+///
+/// A hash-update's wire frame is just `(segment: u32, hashmap: bytes)`, so unlike
+/// the advertisement (which also carries the resource/random/original hashes and
+/// transfer sizes — `ADVERTISEMENT_OVERHEAD`) it can pack far more hashes per
+/// packet. On a small-MTU link this is the difference between learning the part
+/// hashmap in a handful of packets versus one round-trip per `segment_len` parts.
+fn resource_hashmap_update_len_for_mtu(interface_mtu: usize) -> Result<usize, RnsError> {
+    resource_control_mdu_for_mtu(interface_mtu)?
+        .checked_sub(HASH_UPDATE_OVERHEAD)
         .map(|available| available / MAPHASH_LEN)
         .filter(|entries| *entries > 0)
         .ok_or(RnsError::InvalidArgument)

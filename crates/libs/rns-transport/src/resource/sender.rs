@@ -8,6 +8,9 @@ struct ResourceSender {
     sent_parts: Vec<bool>,
     map_hashes: Vec<[u8; MAPHASH_LEN]>,
     hashmap_segment_len: usize,
+    /// Hashes carried per `ResourceHashUpdate` packet (segment-aligned multiple of
+    /// `hashmap_segment_len`). Lets one update deliver many segments at once.
+    hashmap_update_len: usize,
     expected_proof: Hash,
     advertisement_packet: Packet,
     last_activity: Instant,
@@ -68,6 +71,13 @@ impl ResourceSender {
     ) -> Result<Self, RnsError> {
         let resource_mdu = resource_packet_mdu_for_mtu(interface_mtu)?;
         let hashmap_segment_len = resource_hashmap_segment_len_for_mtu(interface_mtu)?;
+        // Hash-update packets carry many more hashes than the advertisement; round
+        // down to a whole number of segments so update blocks stay segment-aligned
+        // (the receiver indexes them at `segment * segment_len`).
+        let hashmap_update_len = (resource_hashmap_update_len_for_mtu(interface_mtu)?
+            / hashmap_segment_len)
+            .max(1)
+            * hashmap_segment_len;
         let has_metadata = metadata.is_some();
         let has_request_id = request_id.is_some();
         let metadata_prefix = if let Some(payload) = metadata.as_ref() {
@@ -170,6 +180,7 @@ impl ResourceSender {
             sent_parts: vec![false; map_hashes.len()],
             map_hashes,
             hashmap_segment_len,
+            hashmap_update_len,
             expected_proof,
             advertisement_packet,
             last_activity: now,
@@ -184,6 +195,27 @@ impl ResourceSender {
 
     fn advertisement_packet(&self) -> Packet {
         self.advertisement_packet.clone()
+    }
+
+    /// Build a `ResourceHashUpdate` packet delivering up to `hashmap_update_len`
+    /// map-hashes starting at hash index `start`. `start` must be a multiple of
+    /// `hashmap_segment_len` so the receiver applies the block at the right offset.
+    /// Returns `None` when `start` is past the end or the packet cannot be built.
+    fn build_hashmap_update(&self, link: &Link, start: usize) -> Option<Packet> {
+        if start >= self.map_hashes.len() {
+            return None;
+        }
+        let hashmap = slice_hashmap_range(&self.map_hashes, start, self.hashmap_update_len);
+        if hashmap.is_empty() {
+            return None;
+        }
+        let update = ResourceHashUpdate {
+            resource_hash: self.resource_hash,
+            segment: (start / self.hashmap_segment_len) as u32,
+            hashmap,
+        };
+        let payload = update.encode().ok()?;
+        build_link_packet(link, PacketType::Data, PacketContext::ResourceHashUpdate, &payload).ok()
     }
 
     fn mark_advertised(&mut self, retry_limit: u8) {
@@ -312,28 +344,9 @@ impl ResourceSender {
                     self.map_hashes.iter().position(|entry| *entry == last_hash)
                 {
                     let next_segment = (last_index / self.hashmap_segment_len) + 1;
-                    if next_segment * self.hashmap_segment_len < self.map_hashes.len() {
-                        let update = ResourceHashUpdate {
-                            resource_hash: self.resource_hash,
-                            segment: next_segment as u32,
-                            hashmap: slice_hashmap_segment(
-                                &self.map_hashes,
-                                next_segment,
-                                self.hashmap_segment_len,
-                            ),
-                        };
-                        if let Ok(payload) = update.encode() {
-                            if let Ok(packet) = build_link_packet(
-                                link,
-                                PacketType::Data,
-                                PacketContext::ResourceHashUpdate,
-                                &payload,
-                            ) {
-                                packets.push(packet);
-                            } else {
-                                self.status = ResourceStatus::Failed;
-                            }
-                        }
+                    let start = next_segment * self.hashmap_segment_len;
+                    if let Some(packet) = self.build_hashmap_update(link, start) {
+                        packets.push(packet);
                     }
                 }
             }
@@ -358,6 +371,19 @@ impl ResourceSender {
                     "resource sender: first request received, transfer started hash={} link={} parts={}",
                     self.resource_hash, self.link_id, self.parts.len(),
                 );
+                // Proactively push the rest of the part hashmap. The advertisement
+                // only carried the first segment (a couple of hashes on a small
+                // MTU); without this the receiver would have to round-trip once per
+                // segment to learn the remaining hashes. Sending them up front lets
+                // it request a full window immediately. Lost updates are still
+                // recovered reactively via the `hashmap_exhausted` branch above.
+                let mut start = self.hashmap_segment_len;
+                while start < self.map_hashes.len() {
+                    if let Some(packet) = self.build_hashmap_update(link, start) {
+                        packets.push(packet);
+                    }
+                    start += self.hashmap_update_len;
+                }
             }
         }
     }

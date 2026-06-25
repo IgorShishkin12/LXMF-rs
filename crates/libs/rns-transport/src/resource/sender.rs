@@ -346,7 +346,17 @@ impl ResourceSender {
                     let next_segment = (last_index / self.hashmap_segment_len) + 1;
                     let start = next_segment * self.hashmap_segment_len;
                     if let Some(packet) = self.build_hashmap_update(link, start) {
+                        log::debug!(
+                            "[res-tx] reactive hash-update hash={} link={} start_hash={} count<={} of {}",
+                            self.resource_hash, self.link_id, start,
+                            self.hashmap_update_len, self.map_hashes.len(),
+                        );
                         packets.push(packet);
+                    } else {
+                        log::debug!(
+                            "[res-tx] hashmap_exhausted but no update to send (all hashes delivered) hash={} link={} start_hash={} total={}",
+                            self.resource_hash, self.link_id, start, self.map_hashes.len(),
+                        );
                     }
                 }
             }
@@ -378,12 +388,18 @@ impl ResourceSender {
                 // it request a full window immediately. Lost updates are still
                 // recovered reactively via the `hashmap_exhausted` branch above.
                 let mut start = self.hashmap_segment_len;
+                let mut pushed = 0usize;
                 while start < self.map_hashes.len() {
                     if let Some(packet) = self.build_hashmap_update(link, start) {
                         packets.push(packet);
+                        pushed += 1;
                     }
                     start += self.hashmap_update_len;
                 }
+                log::info!(
+                    "[res-tx] proactively pushed {pushed} hash-update packet(s) ({} hashes each) to deliver {} part-hashes hash={} link={}",
+                    self.hashmap_update_len, self.map_hashes.len(), self.resource_hash, self.link_id,
+                );
             }
         }
     }

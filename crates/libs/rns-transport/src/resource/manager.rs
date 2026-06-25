@@ -97,11 +97,30 @@ impl ResourceManager {
             let window = self.link_stats.get(&receiver.link_id)
                 .map(|s| s.effective_window())
                 .unwrap_or(WINDOW);
-            if receiver.retry_due(now, eff_interval, self.retry_limit) {
+            let due = receiver.retry_due(now, eff_interval, self.retry_limit);
+            log::debug!(
+                "[res-rx] retry_tick hash={} link={} recv={}/{} retry_count={}/{} due={} since_progress={:.1}s since_request={:.1}s eff_interval={:.1}s in_flight={} window={}",
+                hash, receiver.link_id, receiver.received, receiver.parts.len(),
+                receiver.retry_count, self.retry_limit, due,
+                now.saturating_duration_since(receiver.last_progress).as_secs_f32(),
+                now.saturating_duration_since(receiver.last_request).as_secs_f32(),
+                eff_interval.as_secs_f32(), receiver.in_flight_set.len(), window,
+            );
+            if due {
                 let request = receiver.build_request(now, rtt, window);
                 if !request.requested_hashes.is_empty() || request.hashmap_exhausted {
                     receiver.mark_request();
+                    log::debug!(
+                        "[res-rx] re-request hash={} link={} requested={} exhausted={} retry_count={}",
+                        hash, receiver.link_id, request.requested_hashes.len(),
+                        request.hashmap_exhausted, receiver.retry_count,
+                    );
                     requests.push((receiver.link_id, request));
+                } else {
+                    log::debug!(
+                        "[res-rx] retry_due but empty request (nothing to ask) hash={} link={} recv={}/{}",
+                        hash, receiver.link_id, receiver.received, receiver.parts.len(),
+                    );
                 }
             }
             if receiver.retry_count >= self.retry_limit {
@@ -132,11 +151,31 @@ impl ResourceManager {
         let mut failed = Vec::new();
 
         for (hash, sender) in self.outgoing.iter_mut() {
-            match sender.poll(now, self.retry_interval) {
+            let poll = sender.poll(now, self.retry_interval);
+            // All formatting args (incl. the sent-parts count) are evaluated only
+            // when the level is enabled — the log macro guards them — so this is
+            // zero-cost in release / when debug is filtered out.
+            log::debug!(
+                "[res-tx] poll_tick hash={} link={} status={:?} retries_left={}/{} sent_parts={}/{} since_activity={:.1}s outcome={}",
+                hash, sender.link_id, sender.status, sender.retries_left, sender.max_retries,
+                sender.sent_parts.iter().filter(|s| **s).count(), sender.parts.len(),
+                now.saturating_duration_since(sender.last_activity).as_secs_f32(),
+                match &poll {
+                    OutboundResourcePoll::Send(_) => "send",
+                    OutboundResourcePoll::Failed => "FAILED",
+                    OutboundResourcePoll::None => "none",
+                },
+            );
+            match poll {
                 OutboundResourcePoll::Send(packet) => {
                     packets.push((sender.link_id, (*packet).clone()));
                 }
                 OutboundResourcePoll::Failed => {
+                    log::warn!(
+                        "[res-tx] outbound resource FAILED hash={} link={} status={:?} sent_parts={}/{}",
+                        hash, sender.link_id, sender.status,
+                        sender.sent_parts.iter().filter(|s| **s).count(), sender.parts.len(),
+                    );
                     self.events.push(ResourceEvent {
                         hash: *hash,
                         link_id: sender.link_id,
@@ -372,6 +411,10 @@ impl ResourceManager {
             match receiver.handle_part(packet.data.as_slice(), link) {
                 PartOutcome::NoMatch => continue,
                 PartOutcome::Failed(reason) => {
+                    log::warn!(
+                        "[res-rx] part handling FAILED hash={} link={} reason={} recv={}/{}",
+                        hash, receiver.link_id, reason, receiver.received, receiver.parts.len(),
+                    );
                     failed = Some((*hash, receiver.link_id, receiver.progress(), reason));
                     break;
                 }
@@ -417,6 +460,11 @@ impl ResourceManager {
                             link_id: receiver.link_id,
                             kind: ResourceEventKind::Progress(receiver.progress()),
                         });
+                    } else {
+                        log::debug!(
+                            "[res-rx] part received but NO new progress (duplicate/unknown) hash={} link={} recv={}/{}",
+                            hash, receiver.link_id, receiver.received, receiver.parts.len(),
+                        );
                     }
 
                     let rtt = stats.rtt;

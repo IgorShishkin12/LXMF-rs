@@ -105,16 +105,24 @@ impl ResourceReceiver {
 
     fn apply_hashmap_segment(&mut self, segment: usize, bytes: &[u8]) {
         let hashes = bytes.len() / MAPHASH_LEN;
+        let base = segment * self.hashmap_segment_len;
+        let mut learned = 0usize;
         for i in 0..hashes {
             let start = i * MAPHASH_LEN;
             let mut entry = [0u8; MAPHASH_LEN];
             entry.copy_from_slice(&bytes[start..start + MAPHASH_LEN]);
-            let idx = segment * self.hashmap_segment_len + i;
+            let idx = base + i;
             if idx < self.hashmap.len() && self.hashmap[idx].is_none() {
                 self.hashmap[idx] = Some(entry);
                 self.request_queue.push_back(idx);
+                learned += 1;
             }
         }
+        log::debug!(
+            "[res-rx] apply_hashmap segment={} idx_range={}..{} carried={} newly_learned={} known_total={} link={}",
+            segment, base, base + hashes, hashes, learned,
+            self.hashmap.iter().filter(|h| h.is_some()).count(), self.link_id,
+        );
     }
 
     fn build_request(&mut self, now: Instant, rtt: Duration, window: usize) -> ResourceRequest {
@@ -130,6 +138,7 @@ impl ResourceReceiver {
         // Drain the front of in_flight_queue (front = oldest, since we append in time order).
         // Received entries are lazily pruned; entries older than 2×rtt are declared lost
         // and pushed to the front of request_queue for priority re-request.
+        let mut lost = 0usize;
         loop {
             match self.in_flight_queue.front() {
                 None => break,
@@ -141,11 +150,18 @@ impl ResourceReceiver {
                         self.in_flight_set.remove(&idx);
                         self.in_flight_queue.pop_front();
                         self.request_queue.push_front(idx);
+                        lost += 1;
                     } else {
                         break;
                     }
                 }
             }
+        }
+        if lost > 0 {
+            log::debug!(
+                "[res-rx] build_request: {lost} fragment(s) declared lost (>{:.1}s) re-queued link={} recv={}/{}",
+                loss_threshold.as_secs_f32(), self.link_id, self.received, self.parts.len(),
+            );
         }
 
         // Detect hashmap exhaustion: scan for the first None entry.
@@ -177,6 +193,16 @@ impl ResourceReceiver {
                 }
             }
         }
+
+        // Counts are computed inside the macro args so they cost nothing unless
+        // the level is enabled (the log macro guards argument evaluation).
+        log::debug!(
+            "[res-rx] build_request link={} recv={}/{} known_hashes={} in_flight={} window={} req_queue={} -> requested={} exhausted={}",
+            self.link_id, self.received, self.parts.len(),
+            self.hashmap.iter().filter(|h| h.is_some()).count(),
+            self.in_flight_set.len(), window.max(WINDOW), self.request_queue.len(),
+            requested.len(), hashmap_exhausted,
+        );
 
         ResourceRequest {
             hashmap_exhausted,

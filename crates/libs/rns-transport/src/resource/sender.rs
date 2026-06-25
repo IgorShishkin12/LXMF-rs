@@ -197,6 +197,27 @@ impl ResourceSender {
         self.advertisement_packet.clone()
     }
 
+    /// Forward-progress snapshot for the outbound transfer: how many distinct
+    /// parts (and bytes) have been sent so far. Emitted as `OutboundProgress` so
+    /// the sender side can detect liveness.
+    fn outbound_progress(&self) -> ResourceProgress {
+        let sent_parts = self.sent_parts.iter().filter(|s| **s).count();
+        let received_bytes = self
+            .parts
+            .iter()
+            .zip(&self.sent_parts)
+            .filter(|(_, sent)| **sent)
+            .map(|(part, _)| part.len() as u64)
+            .sum();
+        let total_bytes = self.parts.iter().map(|part| part.len() as u64).sum();
+        ResourceProgress {
+            received_bytes,
+            total_bytes,
+            received_parts: sent_parts,
+            total_parts: self.parts.len(),
+        }
+    }
+
     /// Build a `ResourceHashUpdate` packet delivering up to `hashmap_update_len`
     /// map-hashes starting at hash index `start`. `start` must be a multiple of
     /// `hashmap_segment_len` so the receiver applies the block at the right offset.

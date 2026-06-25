@@ -246,6 +246,11 @@ pub enum ResourceEventKind {
     OutboundComplete,
     OutboundFailed,
     OutboundCancelled,
+    /// Outbound transfer made forward progress (more distinct parts sent in
+    /// response to receiver requests). Lets the *sender* side observe liveness —
+    /// the `Progress` variant is only emitted by the receiver, so without this an
+    /// outbound waiter has no progress signal and would abort a working transfer.
+    OutboundProgress(ResourceProgress),
 }
 
 #[derive(Debug, Clone)]

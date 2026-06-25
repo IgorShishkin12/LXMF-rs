@@ -356,12 +356,26 @@ impl ResourceManager {
         );
         if let Some(sender) = self.outgoing.get_mut(&request.resource_hash) {
             sender.handle_request_into(&request, link, responses);
+            let progress = sender.outbound_progress();
+            let link_id = sender.link_id;
             log::debug!(
-                "[resource-diag] request_responses link={} hash={} responses={}",
+                "[resource-diag] request_responses link={} hash={} responses={} sent_parts={}/{}",
                 link.id(),
                 request.resource_hash,
-                responses.len()
+                responses.len(),
+                progress.received_parts,
+                progress.total_parts,
             );
+            // Surface sender-side liveness so the outbound waiter doesn't abort a
+            // working transfer (the receiver-emitted `Progress` never reaches the
+            // sender). Bridge consumers compare received_bytes monotonically, so
+            // emitting on every request is fine — it only resets the deadline when
+            // new parts were actually sent.
+            self.events.push(ResourceEvent {
+                hash: request.resource_hash,
+                link_id,
+                kind: ResourceEventKind::OutboundProgress(progress),
+            });
         }
     }
 

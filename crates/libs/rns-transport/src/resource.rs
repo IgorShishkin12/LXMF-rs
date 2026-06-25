@@ -25,10 +25,13 @@ pub const WINDOW_MAX: usize = 64;
 pub const MAPHASH_LEN: usize = 4;
 pub const RANDOM_HASH_SIZE: usize = 4;
 pub const ADVERTISEMENT_OVERHEAD: usize = 134;
-/// Wire overhead of a `ResourceHashUpdate` frame `(segment: u32, hashmap: bytes)`
-/// — msgpack array + u32 + byte-string headers, with margin. Far smaller than
-/// `ADVERTISEMENT_OVERHEAD`, so hash-update packets carry many more hashes.
-const HASH_UPDATE_OVERHEAD: usize = 16;
+/// Wire overhead of a `ResourceHashUpdate` payload: a leading 32-byte
+/// `resource_hash` (see `ResourceHashUpdate::encode`) plus the msgpack frame
+/// `(segment: u32, hashmap: bytes)` headers (array tag + u32 + bin header), with
+/// margin. Still far smaller than `ADVERTISEMENT_OVERHEAD`, so updates carry many
+/// more hashes — but the `HASH_SIZE` prefix MUST be counted or the packet
+/// overruns the link MTU and the KISS serializer drops it.
+const HASH_UPDATE_OVERHEAD: usize = HASH_SIZE + 12;
 const HEADER_MINSIZE: usize = 2 + 1 + ADDRESS_HASH_SIZE;
 const HEADER_MAXSIZE: usize = 2 + 1 + (ADDRESS_HASH_SIZE * 2);
 const IFAC_MIN_SIZE: usize = 1;

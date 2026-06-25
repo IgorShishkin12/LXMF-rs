@@ -593,10 +593,28 @@ mod tests {
         const LORA_MTU: usize = 220;
         let segment_len = resource_hashmap_segment_len_for_mtu(LORA_MTU).unwrap();
         let update_len = resource_hashmap_update_len_for_mtu(LORA_MTU).unwrap();
+        let control_mdu = resource_control_mdu_for_mtu(LORA_MTU).unwrap();
         assert!(segment_len >= 1);
         assert!(
             update_len > segment_len * 4,
             "hash-update should carry many more hashes ({update_len}) than an advertisement segment ({segment_len})"
+        );
+
+        // A hash-update packed to `update_len` hashes MUST fit the link control
+        // MDU once encoded (which prepends the 32-byte resource_hash) — otherwise
+        // the KISS serializer drops it. Regression guard for HASH_UPDATE_OVERHEAD.
+        let update = ResourceHashUpdate {
+            resource_hash: Hash::new_from_slice(&[0u8; HASH_SIZE]),
+            segment: u32::MAX,
+            hashmap: vec![0u8; update_len * MAPHASH_LEN],
+        };
+        let encoded = update.encode().unwrap();
+        assert!(
+            encoded.len() <= control_mdu,
+            "hash-update encoded size {} exceeds control MDU {} (update_len={})",
+            encoded.len(),
+            control_mdu,
+            update_len
         );
     }
 

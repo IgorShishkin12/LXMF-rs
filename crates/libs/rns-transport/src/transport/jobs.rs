@@ -84,6 +84,12 @@ pub(super) async fn handle_check_links<'a>(mut handler: MutexGuard<'a, Transport
             }
             LinkStatus::Pending | LinkStatus::Handshake => {
                 if link.elapsed() > INTERVAL_INPUT_LINK_CLEANUP {
+                    log::warn!(
+                        "link({}): closing — never activated (status={:?} elapsed={:.1}s)",
+                        link.id(),
+                        link.status(),
+                        link.elapsed().as_secs_f32(),
+                    );
                     link.close();
                     links_to_remove.push(*link_entry.0);
                     closed_link_ids.push(*link.id());
@@ -227,12 +233,31 @@ pub(super) async fn manage_transport(
                         }
 
                         if !handler.filter_duplicate_packets(&packet).await {
+                            // A duplicate is dropped from the application data path,
+                            // but if it belongs to a known link it still proves the
+                            // peer is alive — refresh the link's liveness anchor so a
+                            // link carrying only retransmissions (stalled channel /
+                            // re-advertising resource) does not go stale and tear down
+                            // mid-transfer.
+                            let mut kept_alive = false;
+                            if packet.header.destination_type == DestinationType::Link {
+                                if let Some(link) = handler
+                                    .in_links
+                                    .get(&packet.destination)
+                                    .or_else(|| handler.out_links.get(&packet.destination))
+                                    .cloned()
+                                {
+                                    link.lock().await.note_link_alive();
+                                    kept_alive = true;
+                                }
+                            }
                             log::debug!(
-                                "tp({}): dropping duplicate packet: dst={}, ctx={:?}, type={:?}",
+                                "tp({}): dropping duplicate packet: dst={}, ctx={:?}, type={:?} link_kept_alive={}",
                                 handler.config.name,
                                 packet.destination,
                                 packet.context,
-                                packet.header.packet_type
+                                packet.header.packet_type,
+                                kept_alive
                             );
                             continue;
                         }

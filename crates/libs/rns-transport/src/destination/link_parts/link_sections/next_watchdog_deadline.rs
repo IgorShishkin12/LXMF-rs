@@ -34,6 +34,15 @@ impl Link {
                 let keepalive_due = now.duration_since(inbound_anchor) >= self.keepalive;
                 if keepalive_due {
                     if now.duration_since(inbound_anchor) >= self.stale_time {
+                        log::warn!(
+                            "link({}): Active->Stale anchor_age={:.1}s keepalive={:.1}s stale_time={:.1}s rtt={:.3}s initiator={}",
+                            self.id,
+                            now.duration_since(inbound_anchor).as_secs_f32(),
+                            self.keepalive.as_secs_f32(),
+                            self.stale_time.as_secs_f32(),
+                            self.rtt.as_secs_f32(),
+                            initiator,
+                        );
                         self.status = LinkStatus::Stale;
                         self.stale_since = Some(now);
                     }
@@ -53,6 +62,14 @@ impl Link {
                 );
                 if let Some(stale_since) = self.stale_since {
                     if now.duration_since(stale_since) >= stale_timeout {
+                        log::warn!(
+                            "link({}): stale teardown stale_for={:.1}s stale_timeout={:.1}s rtt={:.3}s initiator={}",
+                            self.id,
+                            now.duration_since(stale_since).as_secs_f32(),
+                            stale_timeout.as_secs_f32(),
+                            self.rtt.as_secs_f32(),
+                            initiator,
+                        );
                         if let Some(packet) = self.teardown() {
                             return LinkWatchdogAction::SendTeardown(packet);
                         }

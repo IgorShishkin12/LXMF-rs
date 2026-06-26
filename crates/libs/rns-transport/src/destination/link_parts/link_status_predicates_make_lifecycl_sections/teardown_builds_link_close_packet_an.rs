@@ -166,6 +166,64 @@
     }
 
     #[test]
+    fn note_link_alive_refreshes_anchor_and_prevents_stale_teardown() {
+        let signer = PrivateIdentity::new_from_rand(OsRng);
+        let identity = *signer.as_identity();
+        let destination = DestinationDesc {
+            identity,
+            address_hash: identity.address_hash,
+            name: DestinationName::new("lxmf", "delivery"),
+        };
+        let (tx, _) = tokio::sync::broadcast::channel(4);
+
+        let mut link = Link::new(destination, tx);
+        link.status = LinkStatus::Active;
+        link.rtt = Duration::from_millis(500);
+        link.update_keepalive_timing();
+        // Anchor is old enough that the watchdog would otherwise go Stale.
+        link.activated_at = Some(Instant::now() - link.stale_time - Duration::from_secs(1));
+        link.last_inbound = link.activated_at;
+
+        // A duplicate packet arrived for this link: liveness must be refreshed so
+        // the watchdog keeps the link Active (regression: link receiving only
+        // retransmissions tore down mid-transfer).
+        link.note_link_alive();
+        assert_eq!(link.check_watchdog(false), LinkWatchdogAction::None);
+        assert_eq!(link.status, LinkStatus::Active);
+        assert!(link.stale_since.is_none());
+    }
+
+    #[test]
+    fn note_link_alive_revives_stale_link() {
+        let signer = PrivateIdentity::new_from_rand(OsRng);
+        let identity = *signer.as_identity();
+        let destination = DestinationDesc {
+            identity,
+            address_hash: identity.address_hash,
+            name: DestinationName::new("lxmf", "delivery"),
+        };
+        let (tx, _) = tokio::sync::broadcast::channel(4);
+
+        let mut link = Link::new(destination, tx);
+        link.rtt = Duration::from_millis(500);
+        link.update_keepalive_timing();
+        link.status = LinkStatus::Stale;
+        link.stale_since = Some(Instant::now());
+
+        link.note_link_alive();
+        assert_eq!(link.status, LinkStatus::Active);
+        assert!(link.stale_since.is_none());
+        assert!(link.last_inbound.is_some());
+
+        // A closed link must NOT be resurrected by a stray duplicate.
+        link.status = LinkStatus::Closed;
+        link.last_inbound = None;
+        link.note_link_alive();
+        assert_eq!(link.status, LinkStatus::Closed);
+        assert!(link.last_inbound.is_none());
+    }
+
+    #[test]
     fn watchdog_requests_keepalive_for_initiator_links() {
         let signer = PrivateIdentity::new_from_rand(OsRng);
         let identity = *signer.as_identity();

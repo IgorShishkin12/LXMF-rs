@@ -297,6 +297,7 @@ impl Link {
                 let mut buffer = [0u8; PACKET_MDU];
                 match self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
                     Ok(plain_text) if plain_text == self.id.as_slice() => {
+                        log::warn!("link({}): closing — peer sent LinkClose", self.id);
                         self.finalize_local_close();
                     }
                     Ok(plain_text) => {

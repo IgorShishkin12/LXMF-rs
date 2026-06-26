@@ -403,6 +403,29 @@ impl Link {
         }
     }
 
+    /// Refresh the inbound liveness anchor from a packet that arrived for this
+    /// link but was not delivered to the normal data path — e.g. an
+    /// application-layer duplicate the transport deduplicated (a stalled
+    /// channel retransmitting unacked frames, or a resource re-advertising).
+    ///
+    /// A peer that is retransmitting is demonstrably still alive, so its packets
+    /// must keep the link from going stale even though their payload is dropped.
+    /// Without this, a link carrying *only* retransmissions tears down
+    /// mid-transfer (the watchdog anchor never advances), which strands an
+    /// in-flight resource transfer. Mirrors `note_inbound`'s liveness side
+    /// effects (anchor + Stale→Active revival) without touching `last_data`/
+    /// `request_time`, since no new application data was actually delivered.
+    pub(crate) fn note_link_alive(&mut self) {
+        if matches!(self.status, LinkStatus::Active | LinkStatus::Stale) {
+            let now = Instant::now();
+            self.last_inbound = Some(now);
+            if self.status == LinkStatus::Stale {
+                self.status = LinkStatus::Active;
+                self.stale_since = None;
+            }
+        }
+    }
+
     pub(crate) fn note_outbound(&mut self, context: PacketContext) {
         let now = Instant::now();
         self.last_outbound = Some(now);

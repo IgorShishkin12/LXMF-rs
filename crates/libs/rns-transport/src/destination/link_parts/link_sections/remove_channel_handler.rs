@@ -114,10 +114,31 @@ impl Link {
         }
 
         if exhausted {
-            for pending in self.channel_pending.drain().map(|(_, pending)| pending) {
-                self.channel_states.insert(pending.sequence, ChannelMessageState::Failed);
+            // A channel message exhausted its retry budget. Mark the pending
+            // messages Failed, but DO NOT tear down the link: the channel is only
+            // one of the transports multiplexed onto this link (a Resource may be
+            // making progress concurrently), and a channel ack delayed by the
+            // half-duplex link being saturated with resource parts is not proof
+            // the peer is gone. Link liveness is the watchdog's job (keepalive /
+            // stale), so leave the link up and let the watchdog reap it only if
+            // the peer truly went silent. Closing here previously killed an
+            // in-flight resource transfer mid-stream.
+            let failed: Vec<u16> = self
+                .channel_pending
+                .drain()
+                .map(|(_, pending)| pending.sequence)
+                .collect();
+            log::warn!(
+                "link({}): {} channel message(s) exhausted {} retries (rtt={:.3}s window={}) — failing them, link kept alive",
+                self.id,
+                failed.len(),
+                CHANNEL_MAX_TRIES,
+                self.rtt.as_secs_f32(),
+                self.channel_window,
+            );
+            for sequence in failed {
+                self.channel_states.insert(sequence, ChannelMessageState::Failed);
             }
-            self.close();
             return Vec::new();
         }
 

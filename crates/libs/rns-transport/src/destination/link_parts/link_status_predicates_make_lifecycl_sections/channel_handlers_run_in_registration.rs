@@ -302,7 +302,7 @@
     }
 
     #[test]
-    fn channel_retry_exhaustion_closes_link_and_fails_pending_messages() {
+    fn channel_retry_exhaustion_fails_messages_but_keeps_link_alive() {
         let signer = PrivateIdentity::new_from_rand(OsRng);
         let identity = *signer.as_identity();
         let destination = DestinationDesc {
@@ -328,19 +328,28 @@
             .send_channel_message(0x7101, b"eventually-fails".to_vec())
             .expect("channel message");
 
-        for seconds in 1..=4 {
-            let resend_packets =
-                outbound.poll_channel_timeouts(Instant::now() + Duration::from_secs(seconds));
+        // Drive retries to exhaustion by polling well past each retry deadline.
+        // Before exhaustion every poll resends and the link stays Active; once the
+        // retry budget is spent the message is marked Failed but — the regression
+        // this guards — the link must NOT be torn down (a concurrent resource may
+        // still be in flight; link liveness is the watchdog's responsibility).
+        let start = Instant::now();
+        let mut failed = false;
+        for step in 1..=64u64 {
+            let now = start + Duration::from_secs(step * 3600);
+            let resend_packets = outbound.poll_channel_timeouts(now);
+            if outbound.channel_state(sequence) == ChannelMessageState::Failed {
+                assert!(resend_packets.is_empty());
+                failed = true;
+                break;
+            }
             assert_eq!(resend_packets.len(), 1);
             assert_eq!(outbound.status(), LinkStatus::Active);
             assert_eq!(outbound.channel_state(sequence), ChannelMessageState::Sent);
         }
 
-        let resend_packets =
-            outbound.poll_channel_timeouts(Instant::now() + Duration::from_secs(5));
-        assert!(resend_packets.is_empty());
-        assert_eq!(outbound.status(), LinkStatus::Closed);
-        assert_eq!(outbound.channel_state(sequence), ChannelMessageState::Failed);
+        assert!(failed, "channel message should eventually exhaust retries and fail");
+        assert_eq!(outbound.status(), LinkStatus::Active);
     }
 
     #[test]

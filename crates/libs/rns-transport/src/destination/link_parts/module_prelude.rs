@@ -76,8 +76,14 @@ const CHANNEL_RTT_SLOW_SECS: f32 = 1.45;
 
 const CHANNEL_WINDOW_FLEXIBILITY: u8 = 4;
 
+// Channel send retry budget. Kept in line with the Resource sender's retry limit
+// (16) because both transports are multiplexed onto one half-duplex LoRa link: a
+// channel ack can be delayed for many round-trips while a concurrent Resource
+// saturates the airtime, and the retry timeout is RTT-scaled off an optimistic
+// link RTT. Too small a budget makes the channel give up on messages whose data
+// already arrived (only the ack was late), stranding the mux stream.
 #[allow(dead_code)]
-const CHANNEL_MAX_TRIES: u8 = 5;
+const CHANNEL_MAX_TRIES: u8 = 16;
 
 #[derive(Debug, Clone)]
 struct PendingChannelPacket {

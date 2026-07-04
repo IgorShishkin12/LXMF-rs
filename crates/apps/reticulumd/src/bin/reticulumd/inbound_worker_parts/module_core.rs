@@ -166,7 +166,7 @@ pub(super) fn spawn_inbound_worker(
                             failure.progress.total_parts
                         );
                     }
-                    ResourceEventKind::Progress(_) => {}
+                    ResourceEventKind::Progress(_) | ResourceEventKind::OutboundProgress(_) => {}
                 }
             }
         }

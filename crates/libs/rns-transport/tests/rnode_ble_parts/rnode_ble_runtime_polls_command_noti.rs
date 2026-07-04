@@ -117,6 +117,27 @@ fn rnode_ble_command_monitor_exposes_rnode_protocol_state() {
 }
 
 #[test]
+fn rnode_ble_command_monitor_status_json_reports_ble_bearer() {
+    let config = LoraConfig::us915_default();
+    let mut monitor = RnodeBleCommandMonitor::new(config, Duration::ZERO);
+
+    monitor
+        .accept_notification(&RnodeBleNotification {
+            packets: Vec::new(),
+            commands: valid_startup_commands(config),
+        })
+        .expect("valid command responses");
+    let status = monitor.runtime_status_json("ble://RNode 1234");
+
+    assert_eq!(status["endpoint"].as_str(), Some("ble://RNode 1234"));
+    assert_eq!(status["bearer"].as_str(), Some("ble"));
+    assert!(status["baud_rate"].is_null());
+    assert_eq!(status["probe_status"]["detected"].as_bool(), Some(true));
+    assert_eq!(status["radio_status"]["radio_state"].as_u64(), Some(1));
+    assert_eq!(status["online"].as_bool(), Some(true));
+}
+
+#[test]
 fn rnode_ble_command_monitor_rejects_missing_startup_responses_after_deadline() {
     let config = LoraConfig::us915_default();
     let mut monitor = RnodeBleCommandMonitor::new(config, Duration::ZERO);
@@ -124,6 +145,16 @@ fn rnode_ble_command_monitor_rejects_missing_startup_responses_after_deadline() 
     let err = monitor.validate_startup_deadline().expect_err("missing startup responses");
 
     assert!(err.contains("detect"), "unexpected startup error: {err}");
+}
+
+#[test]
+fn rnode_ble_command_monitor_keeps_degraded_fallback_session() {
+    let config = LoraConfig::us915_default();
+    let mut monitor = RnodeBleCommandMonitor::new(config, Duration::ZERO);
+
+    monitor.accept_degraded_startup();
+
+    monitor.validate_startup_deadline().expect("fallback startup remains connected");
 }
 
 #[test]
@@ -149,9 +180,11 @@ fn native_rnode_ble_settings_use_profile_defaults() {
         RNODE_BLE_SCAN_TIMEOUT,
     };
 
-    let settings = NativeRnodeBleSettings::for_peripheral("RNode 1234");
+    let settings =
+        NativeRnodeBleSettings::for_peripheral("RNode 1234").with_peripheral_alias("RNode Backup");
 
     assert_eq!(settings.peripheral_id, "RNode 1234");
+    assert_eq!(settings.peripheral_aliases, vec!["RNode Backup".to_string()]);
     assert_eq!(settings.service_uuid.to_string(), RNODE_BLE_SERVICE_UUID.to_ascii_lowercase());
     assert_eq!(
         settings.write_uuid.to_string(),

@@ -108,7 +108,7 @@ pub(crate) trait BleBackend {
 pub(crate) async fn spawn(
     iface_manager: Arc<tokio::sync::Mutex<InterfaceManager>>,
     iface: &InterfaceConfig,
-) -> Result<AddressHash, String> {
+) -> Result<BleSpawnResult, String> {
     let settings = runtime_settings(iface)?;
 
     #[cfg(target_os = "android")]
@@ -381,7 +381,7 @@ fn runtime_settings(iface: &InterfaceConfig) -> Result<BleRuntimeSettings, Strin
         .map(ToOwned::to_owned);
     let mtu = iface.mtu.unwrap_or(247).clamp(23, 517);
     let scan_timeout_ms = iface.scan_timeout_ms.unwrap_or(5_000);
-    let connect_timeout_ms = iface.connect_timeout_ms.unwrap_or(10_000);
+    let connect_timeout_ms = iface.ble_connect_timeout_ms.or(iface.connect_timeout_ms).unwrap_or(10_000);
     let reconnect_backoff_ms = iface.reconnect_backoff_ms.unwrap_or(500).max(50);
     let max_reconnect_backoff_ms =
         iface.max_reconnect_backoff_ms.unwrap_or_else(|| reconnect_backoff_ms.max(5_000));
@@ -422,7 +422,7 @@ fn startup_probe_mismatch_diagnostic(expected_len: usize, actual_len: usize) -> 
     if actual_len == DEFAULT_ATT_NOTIFICATION_PAYLOAD_BYTES
         || actual_len < expected_len && actual_len < DEFAULT_ATT_NOTIFICATION_PAYLOAD_BYTES
     {
-        "; likely ATT MTU 23 / 20-byte notification payload; btleplug cannot request a larger MTU in this backend, so configure a host adapter that negotiates MTU before enabling notifications"
+        "; likely ATT MTU 23 / 20-byte notification payload; the BLE host/backend did not report a usable negotiated MTU before notifications, so verify btleplug 0.12+ platform MTU support or configure a host adapter that negotiates a larger ATT MTU"
     } else {
         ""
     }

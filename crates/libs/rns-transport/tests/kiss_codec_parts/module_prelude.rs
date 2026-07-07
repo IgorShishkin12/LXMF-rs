@@ -173,12 +173,34 @@ fn stream_decoder_continues_after_python_lenient_escape_frame() {
 }
 
 #[test]
-fn decode_oversized_payload_truncates_to_python_hw_mtu() {
+fn decode_oversized_payload_is_not_truncated() {
+    // A frame that arrived intact must be decoded in full even when it exceeds
+    // the local interface MTU hint. Truncating it (the previous behaviour)
+    // silently corrupted otherwise-valid packets, which then failed to decrypt.
     let input = [FEND, CMD_DATA, 0x01, 0x02, 0x03, FEND];
 
-    let frames = decode_frames(&input, 2).expect("decode capped payload");
+    let frames = decode_frames(&input, 2).expect("decode oversized payload");
 
-    assert_eq!(frames, vec![KissFrame::Data(vec![0x01, 0x02])]);
+    assert_eq!(frames, vec![KissFrame::Data(vec![0x01, 0x02, 0x03])]);
+}
+
+#[test]
+fn decode_frame_larger_than_hard_cap_is_truncated() {
+    // OOM guard: a peer that streams an enormous frame must not grow the buffer
+    // without bound. The raw frame is capped at 65_535 bytes (command + payload),
+    // so a 70_000-byte payload comes back truncated regardless of the MTU hint
+    // (usize::MAX here, to isolate this cap from the MTU check).
+    let mut input = vec![FEND, CMD_DATA];
+    input.extend(std::iter::repeat(0x01).take(70_000));
+    input.push(FEND);
+
+    let frames = decode_frames(&input, usize::MAX).expect("decode capped frame");
+
+    let KissFrame::Data(payload) = &frames[0] else {
+        panic!("expected a data frame");
+    };
+    assert_eq!(payload.len(), 65_534); // 65_535 raw cap minus the command byte
+    assert!(payload.iter().all(|&b| b == 0x01));
 }
 
 #[test]

@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 pub const FEND: u8 = 0xC0;
 pub const FESC: u8 = 0xDB;
 pub const TFEND: u8 = 0xDC;
@@ -106,7 +108,18 @@ impl KissStreamDecoder {
                 }
                 continue;
             }
-            self.frame.push(*byte);
+            // OOM guard: cap the accumulated frame. Warn once, on the byte that
+            // hits the cap; further bytes are dropped until the next FEND, so the
+            // decoded message comes back truncated rather than growing unbounded.
+            if self.frame.len() < MAX_MESSAGE_LEN {
+                self.frame.push(*byte);
+                if self.frame.len() == MAX_MESSAGE_LEN {
+                    log::warn!(
+                        "KISS frame reached the {MAX_MESSAGE_LEN} B hard cap; dropping further bytes \
+                         and returning the message truncated (out-of-memory guard)"
+                    );
+                }
+            }
         }
         Ok(frames)
     }
@@ -125,6 +138,23 @@ fn decode_frame(raw: &[u8], max_payload_len: usize, strip_command_port_nibble: b
     }
 }
 
+/// Number of decoded KISS payloads observed that exceeded the interface MTU
+/// hint. Tracked process-wide purely to escalate a persistent mismatch to a
+/// single WARN — it is a diagnostic, not a limit.
+static OVERSIZED_PAYLOAD_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// After this many oversized payloads, emit one WARN: a steady stream of them
+/// means the two link endpoints almost certainly disagree on their interface MTU.
+const OVERSIZED_WARN_THRESHOLD: u64 = 100;
+
+/// Hard upper bound on a single accumulated KISS frame. Unlike the interface MTU
+/// (a hint we no longer enforce), this is an absolute limit: a malicious peer
+/// that never sends FEND would otherwise grow the frame buffer without bound and
+/// exhaust memory. Bytes past this are dropped so a frame stays O(this) in size.
+/// Legitimate Reticulum packets are well under 1 KiB, so this never trims real
+/// traffic.
+const MAX_MESSAGE_LEN: usize = 65_535;
+
 fn decode_payload(input: &[u8], max_payload_len: usize) -> Vec<u8> {
     let mut output = Vec::with_capacity(input.len());
     let mut index = 0;
@@ -134,22 +164,42 @@ fn decode_payload(input: &[u8], max_payload_len: usize) -> Vec<u8> {
             let Some(escaped) = input.get(index + 1).copied() else {
                 break;
             };
-            match escaped {
-                TFEND => push_capped(&mut output, max_payload_len, FEND),
-                TFESC => push_capped(&mut output, max_payload_len, FESC),
-                value => push_capped(&mut output, max_payload_len, value),
-            }
+            let decoded = match escaped {
+                TFEND => FEND,
+                TFESC => FESC,
+                value => value,
+            };
+            output.push(decoded);
             index += 2;
         } else {
-            push_capped(&mut output, max_payload_len, byte);
+            output.push(byte);
             index += 1;
         }
     }
+
+    // The interface MTU is a host-side hint, not a wire limit. A frame that
+    // crossed the link intact must be decoded in full: silently truncating it to
+    // our local MTU corrupts otherwise-valid packets (they then fail to
+    // decrypt/parse downstream, which is exactly the failure this replaces). We
+    // still *check* the MTU and surface the mismatch, but never drop bytes.
+    if output.len() > max_payload_len {
+        report_oversized_payload(output.len(), max_payload_len);
+    }
+
     output
 }
 
-fn push_capped(output: &mut Vec<u8>, max_payload_len: usize, byte: u8) {
-    if output.len() < max_payload_len {
-        output.push(byte);
+/// Trace every over-MTU payload; once enough have accumulated, warn once that the
+/// endpoints' interface MTUs are almost certainly mismatched.
+fn report_oversized_payload(actual: usize, mtu: usize) {
+    log::trace!(
+        "KISS frame payload {actual} B exceeds interface MTU {mtu} B; decoding in full (not truncating)"
+    );
+    let seen = OVERSIZED_PAYLOAD_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if seen == OVERSIZED_WARN_THRESHOLD {
+        log::warn!(
+            "KISS frame payload has exceeded the interface MTU for {OVERSIZED_WARN_THRESHOLD}+ frames; \
+             the two link endpoints likely have mismatched interface MTUs (see earlier TRACE lines)"
+        );
     }
 }
